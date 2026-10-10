@@ -18,7 +18,25 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[test]" ruff
-      - run: ruff check src tests examples
+      - run: ruff check src tests examples space
       - run: pytest
       - run: python -m regress --no-color demo --scenario all --cycles 12
       - run: python examples/quickstart.py
+      - name: Gate a healthy run (must pass) and a collapsing one (must fail)
+        run: |
+          regress --no-color demo --scenario healthy --cycles 10 --save healthy.json > /dev/null
+          regress --no-color demo --scenario collapse --cycles 14 --save collapse.json > /dev/null
+          regress gate healthy.json
+          if regress gate collapse.json; then echo "gate should have failed" && exit 1; fi
+
+  site-and-space:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Non-editable install: proves the page template ships inside the wheel.
+      - run: pip install ".[test,space]" httpx
+      - run: regress site --out _site && test -s _site/index.html
+      - run: pytest tests/test_space_app.py tests/test_features_v02.py

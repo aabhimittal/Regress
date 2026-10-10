@@ -6,7 +6,7 @@ from .detector import ALARM, OK, WATCH, CollapseDetector, Signal, Thresholds
 from .monitor import CycleReport, ProbeSuiteMismatch, RegressionMonitor
 from .probes import ProbeSuite, ProbeSuiteTampered
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Agent",

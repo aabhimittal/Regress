@@ -1,0 +1,34 @@
+name: REGRESS gate
+description: Fail a workflow when a self-evolving agent's REGRESS history shows a regression.
+branding:
+  icon: activity
+  color: red
+inputs:
+  history:
+    description: Path to the history JSON written by RegressionMonitor.save()
+    required: true
+  fail-on:
+    description: "alarm (default) or watch"
+    default: alarm
+  any-cycle:
+    description: "true to judge the worst cycle instead of the latest"
+    default: "false"
+  report:
+    description: Optional path for an interactive HTML report (upload it as an artifact)
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: python3 -m pip install --quiet "$GITHUB_ACTION_PATH"
+    - shell: bash
+      env:
+        HISTORY: ${{ inputs.history }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        ANY_CYCLE: ${{ inputs.any-cycle }}
+        REPORT: ${{ inputs.report }}
+      run: |
+        if [ -n "$REPORT" ]; then regress report "$HISTORY" --html "$REPORT"; fi
+        args=(gate "$HISTORY" --fail-on "$FAIL_ON" --markdown "$GITHUB_STEP_SUMMARY")
+        if [ "$ANY_CYCLE" = "true" ]; then args+=(--any-cycle); fi
+        regress "${args[@]}"

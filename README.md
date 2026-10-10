@@ -31,6 +31,13 @@ decline began**, which is often several cycles before the alarm fires.
 
 ---
 
+## Try it
+
+* **Interactive lab** (static page, no install): built by `regress site` and deployed to
+  GitHub Pages and Vercel from this repo (see [Deploying](#deploying)).
+* **Hugging Face Space**: the lab plus *run your own scenario* and *upload your own
+  history* (`space/`).
+
 ## 60-second demo
 
 ```bash
@@ -108,7 +115,7 @@ monitor.save("history.json")
 
 `FunctionAgent(respond_fn, memory_fn)` wraps plain callables. `examples/quickstart.py`
 shows a complete example: a keyword QA bot whose "dedupe" consolidation step merges
-distinct facts. REGRESS flags it at cycle 3, while accuracy is still 0.88.
+distinct facts. REGRESS flags it at cycle 4, with accuracy at 0.83.
 
 **Free-text outputs:** pass `output_key=` so that rewording does not count as drift
 (for example, normalise whitespace and case, or map each answer to an embedding cluster id).
@@ -139,6 +146,98 @@ estimate says cycle 3. The cause is closer to the onset than to the alarm.
 accepts fits that move in the harmful direction, and it fits only up to the first alarm
 plus two cycles, because a collapse in progress saturates and oscillates.
 
+
+### Fit the thresholds to your agent
+
+The default tolerances are generic guesses. `calibrate` fits them to histories of cycles you
+know were healthy: for each signal it takes a high quantile of the healthy *harmful* moves
+from baseline and multiplies by a margin (defaults 99.9 % × 1.5). It never goes below 25 % of
+the default, and keeps the default where it has fewer than 10 samples.
+
+```python
+from regress import CollapseDetector
+from regress.calibrate import calibrate
+
+cal = calibrate([healthy_run_1.history, healthy_run_2.history])
+print(cal.summary())
+monitor = RegressionMonitor(suite, detector=CollapseDetector(cal.thresholds))
+```
+
+```bash
+regress calibrate healthy-*.json --out thresholds.json
+```
+
+In the simulator, calibrating on 5 healthy runs (seeds 100–104) and testing on unseen seeds:
+
+| | default thresholds | calibrated |
+|---|---|---|
+| false-alarm cycles, 20 healthy seeds × 20 cycles | 0 / 400 | 0 / 400 |
+| alarm lag after true onset, 6 unseen seeds each: collapse | 1 | 0–1 |
+| … slow (gentle) collapse | 3–10 | 0–1 |
+| … probe leak | 2–3 | 0 |
+
+The calibrated detector alarms on the onset cycle itself, often while accuracy is still at
+baseline. The usual caveat applies: calibrate on runs that were already degrading and you
+teach it to accept degradation.
+
+### Which memories did it?
+
+`blame` traces a regression to the memories behind it. For the probes that regressed against
+cycle 0, it ranks the memories they retrieved by how many regressed probes used them. It also
+reports *lift* (how much more often failing probes use a memory than probes in general), the
+memory's retrieval-share change and the cycle it first appeared.
+
+```bash
+regress blame history.json            # default: the first alarming cycle
+```
+```
+cycle 10: 6 probes regressed against cycle 0
+memory           regressed  total   lift    share then→now first seen
+m00439                   3     30   2.67    0.0% → 2.7%             5
+m00427                   2      8   6.67    0.0% → 0.7%             5
+```
+
+In the collapse simulation, the top suspects are the inflated hub memories: their median
+importance weight is more than 10× the memory's median. The evidence is correlational, so the
+check is to quarantine the suspects and re-run the suite.
+
+### Is the probe suite still useful?
+
+`regress health history.json` classifies every probe as saturated (always passed),
+unsolved (never passed), flaky (flips without a trend), regressed, improved or mixed, and
+says when to rotate. A suite that is 80 % saturated can catch regressions but can no longer
+see improvements.
+
+### Gate CI on it
+
+```bash
+regress gate history.json --fail-on alarm --markdown "$GITHUB_STEP_SUMMARY"   # exit 1 on ALARM
+regress report history.json --html report.html                                # interactive page
+```
+
+or as a GitHub Action:
+
+```yaml
+- uses: aabhimittal/Regress@main
+  with:
+    history: runs/history.json
+    report: regress-report.html     # optional
+```
+
+`RegressionMonitor(..., on_alarm=fn)` calls `fn(report)` once each time the status *enters*
+ALARM, which makes it a paging hook. A sustained alarm pages once, and an exception inside
+`fn` is recorded rather than crashing the learning loop.
+
+### Text memories and free-text answers
+
+```python
+from regress.adapters import HashingEmbedder, memory_from_texts, text_key
+
+monitor = RegressionMonitor(suite, output_key=text_key())     # "Paris." == " paris"
+snapshot = memory_from_texts(ids, texts)                      # dependency-free hashing embedder
+snapshot = memory_from_texts(ids, texts, my_sentence_model)   # anything with .embed(list[str])
+```
+
 ---
 
 ## The alarm rule
@@ -155,6 +254,10 @@ Signals are grouped into categories: drift, diversity, retrieval, confidence, in
   * signals in **≥ 2 independent categories** (`min_categories`),
 
   sustained for `patience` consecutive cycles (default 1).
+
+An accuracy drop must also be statistically supported. It has to exceed 1.96 × the standard
+error of the paired per-probe changes, so one flipped probe in a 20-probe suite is not called
+a regression, while 24 flips in a 400-probe suite are (`significance_z=0` turns this off).
 
 The per-probe change rate ("churn") is a *weak* signal. It can raise WATCH but never
 counts toward an alarm, because learning *should* change outputs.
@@ -203,16 +306,33 @@ direct *causes* of the collapse REGRESS measures:
 
 ---
 
+## Deploying
+
+The lab is one self-contained HTML file. `regress site --out DIR` rebuilds it from the
+library, so the numbers on the page always match the code.
+
+| Target | What's in the repo | One-time setup |
+|---|---|---|
+| **GitHub Pages** | `.github/workflows/pages.yml` builds and deploys on every push to `main` | Settings → Pages → Source: **GitHub Actions** |
+| **Vercel** | `vercel.json` (Python venv install → `regress site --out public`) | Import the repo in Vercel; no framework preset, no env vars |
+| **Hugging Face Space** | `space/` (Gradio + FastAPI app); `.github/workflows/hf-space.yml` syncs it on every push | Add a repo secret `HF_TOKEN` (write token); optional repo variable `HF_SPACE` (default `abhimittal/regress`) |
+
+Run the Space locally with `pip install -e ".[space]" && python space/app.py`, then open
+http://localhost:7860. Without `HF_TOKEN` the sync job logs a notice and skips, so it never
+turns CI red.
+
+---
+
 ## Limitations
 
 * **Probe suites go stale, and the agent can overfit them.** The held-out split catches
   leakage of the *public* half. It does nothing if the held-out probes themselves leak, for
   example through logs the agent can read. Rotate suites, and keep held-out probes out of
   any data path the agent learns from.
-* **The thresholds are arbitrary until validated across stacks.** They were tuned on the
-  bundled simulator, which has zero false alarms across 8 healthy seeds × 20 cycles and
-  alarms 1–5 cycles after onset in the collapse scenario. That is one toy world. Without
-  cross-stack validation, treat them as hypotheses.
+* **The default thresholds are arbitrary until validated across stacks.** They were tuned on
+  the bundled simulator. `calibrate` replaces them with tolerances fitted to *your* healthy
+  runs. That fixes the scale but not the label: it is only as good as your judgement of
+  which runs were healthy.
 * **The simulator is a cartoon.** Its collapse mechanism (hub attraction plus
   importance-weighted retrieval plus self-labelling) was designed to produce the
   signature. It shows that the detector responds to the signature. It does not show that
@@ -243,8 +363,16 @@ src/regress/
   bisect.py      checkpoint bisection + change-point onset estimation
   budget.py      consolidation EV rule + byte-capped memory with forgetting policies
   sim.py         toy self-evolving agent and scenarios
-  report.py      tables, sparklines, verdicts
-  cli.py         `regress demo`, `regress show`
+  calibrate.py   fit thresholds to healthy runs
+  blame.py       rank the memories behind a regression
+  health.py      saturated / unsolved / flaky probe detection
+  gate.py        CI verdict + Markdown summary
+  adapters.py    text memories: hashing embedder, text output keys
+  site.py        build the interactive lab / HTML reports (template in assets/lab.html)
+  report.py      terminal tables, sparklines, verdicts
+  cli.py         regress demo | show | site | report | gate | calibrate | blame | health
+space/           Hugging Face Space (Gradio + FastAPI)
+action.yml       GitHub Action wrapping `regress gate`
 ```
 
 Dependencies: `numpy` only. Python ≥ 3.10.
@@ -253,7 +381,7 @@ Dependencies: `numpy` only. Python ≥ 3.10.
 
 ```bash
 pip install -e ".[test]" ruff
-pytest              # ~130 tests, including Hypothesis property tests
+pytest              # ~160 tests, including Hypothesis property tests
 ruff check src tests examples
 ```
 
