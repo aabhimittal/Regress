@@ -33,6 +33,11 @@ jobs:
           mkdir -p _space/src
           cp -r space/. _space/
           cp -r src/regress _space/src/
+          for d in experiments/results/*/; do
+            [ -f "$d/summary.json" ] || continue
+            mkdir -p "_space/results/$(basename "$d")"
+            cp "$d"/summary.json "$d"/report-*.html "_space/results/$(basename "$d")/"
+          done
           find _space -name __pycache__ -prune -exec rm -rf {} +
           python - <<'PY'
           import os

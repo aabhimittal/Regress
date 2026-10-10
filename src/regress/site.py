@@ -266,10 +266,81 @@ def _escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def build_demo(out_dir: str | Path, seeds: Sequence[int] = (0, 1, 2), cycles: int = 20) -> Path:
+def build_demo(
+    out_dir: str | Path,
+    seeds: Sequence[int] = (0, 1, 2),
+    cycles: int = 20,
+    results_dir: str | Path | None = None,
+) -> Path:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    payload = demo_payload(seeds=seeds, cycles=cycles)
+    if results_dir is not None and build_results_index(results_dir, out / "real") is not None:
+        payload["meta"]["links"] = [{"label": "Real language-model results", "href": "real/"}]
     page = out / "index.html"
-    page.write_text(render(demo_payload(seeds=seeds, cycles=cycles)), encoding="utf-8")
+    page.write_text(render(payload), encoding="utf-8")
     (out / ".nojekyll").write_text("")
     return page
+
+
+def build_results_index(results_dir: str | Path, out_dir: str | Path) -> Path | None:
+    """Copy recorded real-agent reports and write an index page. None if nothing recorded."""
+    import shutil
+
+    runs = sorted(p for p in Path(results_dir).iterdir() if (p / "summary.json").is_file()) \
+        if Path(results_dir).is_dir() else []
+    if not runs:
+        return None
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for run in runs:
+        summary = json.loads((run / "summary.json").read_text())
+        dest = out / run.name
+        dest.mkdir(exist_ok=True)
+        for rep in run.glob("report-*.html"):
+            shutil.copy(rep, dest / rep.name)
+        st = summary.get("settings", {})
+        frac = (st.get("agent_kwargs") or {}).get("compress_fraction", 1.0)
+        for regime, r in summary.get("results", {}).items():
+            acc = " ".join(f"{a:.2f}" for a in r.get("accuracy", []))
+            marks = "".join({"OK": "·", "WATCH": "~", "ALARM": "▲"}.get(x, "?") for x in r.get("statuses", []))
+            ab = r.get("ablation") or {}
+            verdict = f"{ab.get('verdict')} ({ab.get('recovered')}/{ab.get('regressed')} vs controls {ab.get('control_recovered')})" if ab else "–"
+            rows.append(
+                f"<tr><td>{_escape(run.name)}</td><td>{_escape(regime)}"
+                f"{' (gradual ' + format(frac, 'g') + ')' if regime == 'recursive_summary' and frac < 1 else ''}</td>"
+                f"<td class=m>{marks}</td><td class=m>{r.get('first_alarm')}</td><td class=m>{acc}</td>"
+                f"<td>{_escape(verdict)}</td><td><a href=\"{_escape(run.name)}/report-{_escape(regime)}.html\">report</a></td></tr>"
+            )
+        backend = _escape(summary.get("backend", "?"))
+        rows.append(f"<tr class=note><td colspan=7>{backend} · {st.get('cycles')} cycles · "
+                    f"{st.get('people')} people · separates regimes: {summary.get('separates')}</td></tr>")
+    page = out / "index.html"
+    page.write_text(_RESULTS_PAGE.replace("__ROWS__", "\n".join(rows)), encoding="utf-8")
+    return page
+
+
+_RESULTS_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>REGRESS Real-Agent Results</title>
+<style>
+:root{--bg:#F3F5F8;--fg:#121722;--muted:#586174;--line:#DCE1E9;--accent:#3445C2;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0E1117;--fg:#E5E8EF;--muted:#96A0B3;--line:#2A303C;--accent:#8E9CFF;color-scheme:dark}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 "IBM Plex Sans",system-ui,sans-serif}
+.w{max-width:1100px;margin:0 auto;padding:28px 16px;display:grid;gap:16px}
+h1{font-size:28px;margin:0}p{margin:0;color:var(--muted);max-width:75ch}a{color:var(--accent)}
+.t{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}
+td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.m{font-family:ui-monospace,Menlo,monospace}tr.note td{color:var(--muted);font-size:12px;padding-bottom:14px}
+</style></head><body><div class="w">
+<h1>REGRESS on real language models</h1>
+<p>A note-memory agent answers questions about a fictional fact world with a real model. The <b>faithful</b>
+regime stores new facts verbatim; <b>recursive_summary</b> self-trains on its own answers and has the model
+compress its notes every cycle. REGRESS should stay quiet on the first and alarm on the second.
+Status per cycle: · ok, ~ watch, ▲ alarm.</p>
+<div class="t"><table><thead><tr><th>run</th><th>regime</th><th>status</th><th>first alarm</th>
+<th>accuracy by cycle</th><th>ablation of blame suspects</th><th></th></tr></thead><tbody>
+__ROWS__
+</tbody></table></div>
+<p><a href="../">← back to the simulator lab</a></p></div></body></html>
+"""

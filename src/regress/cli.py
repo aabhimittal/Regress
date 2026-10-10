@@ -92,6 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     st.add_argument("--out", default="site")
     st.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     st.add_argument("--cycles", type=int, default=20)
+    st.add_argument("--results", help="directory of recorded real-agent runs to publish under real/")
     rp = sub.add_parser("report", help="turn a saved history into an interactive HTML report")
     rp.add_argument("path")
     rp.add_argument("--html", required=True, help="output HTML file")
@@ -112,6 +113,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     b.add_argument("--top", type=int, default=10)
     h = sub.add_parser("health", help="classify probes as saturated, unsolved, flaky, ...")
     h.add_argument("path")
+    e = sub.add_parser("experiment", help="run REGRESS on a real language-model agent (faithful vs recursive summary)")
+    e.add_argument("--backend", choices=["rules", "llamacpp", "anthropic", "replay"], default="rules",
+                   help="rules: deterministic stand-in; llamacpp: local GGUF; anthropic: Claude API; "
+                        "replay: re-run a recorded experiment (--replay-from DIR) without the model")
+    e.add_argument("--replay-from", help="directory with summary.json + llm-cache.jsonl from a recorded run")
+    e.add_argument("--model", help="GGUF path for llamacpp, model id for anthropic (default claude-opus-5-5)")
+    e.add_argument("--out", required=True)
+    e.add_argument("--cycles", type=int, default=8)
+    e.add_argument("--people", type=int, default=20)
+    e.add_argument("--seed", type=int, default=0)
+    e.add_argument("--compress-fraction", type=float, default=1.0,
+                   help="share of old notes the recursive regime compresses per cycle (< 1 = gradual)")
     args = p.parse_args(argv)
     style = Style(False if args.no_color else None)
 
@@ -136,7 +149,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.cycles < 4:
             p.error("--cycles must be >= 4")
-        page = build_demo(args.out, seeds=args.seeds, cycles=args.cycles)
+        page = build_demo(args.out, seeds=args.seeds, cycles=args.cycles, results_dir=args.results)
         print(f"wrote {page} ({page.stat().st_size / 1e6:.1f} MB)")
         return 0
     if args.cmd == "report":
@@ -186,6 +199,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             for x in rep.suspects:
                 print(f"{x.memory_id:<16} {x.regressed_hits:>9} {x.total_hits:>6} {x.lift:>6.2f} "
                       f"{x.share_base:>7.1%} → {x.share_now:<7.1%} {str(x.first_seen):>10}")
+        return 0
+    if args.cmd == "experiment":
+        import shutil
+
+        from .llm import AnthropicBackend, CachedBackend, LlamaCppBackend, ReplayBackend, RuleBackend, run_experiment
+
+        if args.cycles < 1 or args.people < 2:
+            p.error("--cycles must be >= 1 and --people >= 2")
+        if args.backend == "llamacpp":
+            if not args.model:
+                p.error("--backend llamacpp needs --model PATH.gguf")
+            backend = LlamaCppBackend(args.model)
+        elif args.backend == "anthropic":
+            backend = AnthropicBackend(model=args.model or "claude-opus-5-5")
+        elif args.backend == "replay":
+            if not args.replay_from:
+                p.error("--backend replay needs --replay-from DIR")
+            src = Path(args.replay_from)
+            recorded = json.loads((src / "summary.json").read_text())
+            backend = ReplayBackend(recorded["backend"])
+            st = recorded.get("settings", {})
+            args.cycles, args.people, args.seed = st.get("cycles", args.cycles), st.get("people", args.people), st.get("seed", args.seed)
+            args.compress_fraction = (st.get("agent_kwargs") or {}).get("compress_fraction", args.compress_fraction)
+        else:
+            backend = RuleBackend()
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        if args.backend == "replay":
+            if (out / "llm-cache.jsonl").resolve() != (src / "llm-cache.jsonl").resolve():
+                shutil.copy(src / "llm-cache.jsonl", out / "llm-cache.jsonl")
+            backend = CachedBackend(backend, out / "llm-cache.jsonl")
+        elif args.backend != "rules":
+            backend = CachedBackend(backend, out / "llm-cache.jsonl")
+        if not 0 < args.compress_fraction <= 1:
+            p.error("--compress-fraction must be in (0, 1]")
+        summary = run_experiment(backend, cycles=args.cycles, people=args.people, seed=args.seed, out_dir=out,
+                                 agent_kwargs={"compress_fraction": args.compress_fraction})
+        for regime, r in summary["results"].items():
+            marks = "".join({"OK": "·", "WATCH": "~", "ALARM": "▲"}[x] for x in r["statuses"])
+            acc = " ".join(f"{a:.2f}" for a in r["accuracy"])
+            print(f"{regime:<18} {marks}  first alarm: {r['first_alarm']}  accuracy: {acc}")
+            if r.get("ablation"):
+                a = r["ablation"]
+                print(f"{'':<18} ablation: {a['verdict']} (recovered {a['recovered']}/{a['regressed']}, "
+                      f"controls {a['control_recovered']})")
+        print(f"separates regimes: {summary['separates']} · outputs in {out}/")
         return 0
     if args.cmd == "health":
         from .gate import load_history

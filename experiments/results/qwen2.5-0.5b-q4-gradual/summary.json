@@ -1,0 +1,318 @@
+{
+ "backend": "llamacpp:qwen2.5-0.5b-instruct-q4_k_m.gguf",
+ "settings": {
+  "cycles": 8,
+  "people": 20,
+  "seed": 0,
+  "agent_kwargs": {
+   "compress_fraction": 0.25
+  }
+ },
+ "results": {
+  "faithful": {
+   "regime": "faithful",
+   "first_alarm": null,
+   "first_signal": null,
+   "statuses": [
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK"
+   ],
+   "accuracy": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "effective_rank": [
+    18.082971993905886,
+    19.560723171429704,
+    20.740715887022123,
+    21.7899739321601,
+    22.959759021692495,
+    23.605864331012768,
+    24.328694703810903,
+    25.114571524666438,
+    25.789580373249937
+   ],
+   "retrieval_entropy": [
+    0.9719632508957008,
+    0.9576508475543197,
+    0.9442183218375306,
+    0.9437426494411021,
+    0.9432688674569839,
+    0.9301319787854633,
+    0.9170555079570246,
+    0.9026006721132498,
+    0.8975589552613891
+   ],
+   "mean_confidence": [
+    0.976925777684772,
+    0.9767247581904126,
+    0.9766441693986028,
+    0.9753760754963572,
+    0.9753329539260702,
+    0.9770740475958967,
+    0.9765046958134838,
+    0.9769531348694758,
+    0.9764359713424914
+   ],
+   "memory_size": [
+    60.0,
+    72.0,
+    84.0,
+    96.0,
+    108.0,
+    120.0,
+    132.0,
+    144.0,
+    156.0
+   ],
+   "bisect": null,
+   "onset": null,
+   "ablation": null,
+   "model_calls": 0,
+   "probe_calls": 540,
+   "cache_hits": 0,
+   "seconds": 1.1,
+   "consolidation": [
+    {
+     "cycle": 1,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 2,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 3,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 4,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 5,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 6,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 7,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 8,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    }
+   ]
+  },
+  "recursive_summary": {
+   "regime": "recursive_summary",
+   "first_alarm": 2,
+   "first_signal": 1,
+   "statuses": [
+    "OK",
+    "WATCH",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM"
+   ],
+   "accuracy": [
+    1.0,
+    0.9,
+    0.75,
+    0.65,
+    0.6166666666666667,
+    0.55,
+    0.4166666666666667,
+    0.36666666666666664,
+    0.3
+   ],
+   "effective_rank": [
+    18.082971993905886,
+    19.55848291947457,
+    22.13173760908122,
+    23.424757424656395,
+    25.62572760833141,
+    26.515313950146602,
+    26.250287403356253,
+    26.402621819657377,
+    26.558680164850895
+   ],
+   "retrieval_entropy": [
+    0.9719632508957008,
+    0.8856365783521971,
+    0.80435321304913,
+    0.7741246243081641,
+    0.7729369418975159,
+    0.7547958914544948,
+    0.7489362946440279,
+    0.7405615311181006,
+    0.7404094964188099
+   ],
+   "mean_confidence": [
+    0.976925777684772,
+    0.9403013368118128,
+    0.9287570233028575,
+    0.8957105508338958,
+    0.9073965085029578,
+    0.8816314320626193,
+    0.893154009854055,
+    0.8513067032352524,
+    0.8510592094525852
+   ],
+   "memory_size": [
+    60.0,
+    68.0,
+    75.0,
+    81.0,
+    85.0,
+    88.0,
+    92.0,
+    94.0,
+    95.0
+   ],
+   "bisect": {
+    "first_bad": 2,
+    "last_good": 1,
+    "evaluations": 5,
+    "consistent": true
+   },
+   "onset": 1,
+   "ablation": {
+    "cycle": 2,
+    "suspects": [
+     "n00099",
+     "n00098",
+     "n00096",
+     "n00100"
+    ],
+    "recovered": 1,
+    "control_recovered": [
+     1,
+     2,
+     0
+    ],
+    "collateral": 2,
+    "collateral_checked": 40,
+    "individual": {
+     "n00099": 1,
+     "n00098": 0,
+     "n00096": 0,
+     "n00100": 0
+    },
+    "verdict": "refuted",
+    "note": "",
+    "calls": 160,
+    "regressed": 15
+   },
+   "model_calls": 570,
+   "probe_calls": 540,
+   "cache_hits": 420,
+   "seconds": 1123.1,
+   "consolidation": [
+    {
+     "cycle": 1,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 5,
+     "removed": 15
+    },
+    {
+     "cycle": 2,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 6,
+     "removed": 17
+    },
+    {
+     "cycle": 3,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 6,
+     "removed": 18
+    },
+    {
+     "cycle": 4,
+     "added": 12,
+     "self_notes": 5,
+     "summaries": 7,
+     "removed": 20
+    },
+    {
+     "cycle": 5,
+     "added": 12,
+     "self_notes": 5,
+     "summaries": 7,
+     "removed": 21
+    },
+    {
+     "cycle": 6,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 7,
+     "removed": 21
+    },
+    {
+     "cycle": 7,
+     "added": 12,
+     "self_notes": 5,
+     "summaries": 8,
+     "removed": 23
+    },
+    {
+     "cycle": 8,
+     "added": 12,
+     "self_notes": 5,
+     "summaries": 8,
+     "removed": 24
+    }
+   ]
+  }
+ },
+ "separates": true,
+ "wall_seconds": 1124.2
+}

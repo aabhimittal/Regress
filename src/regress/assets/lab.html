@@ -528,6 +528,12 @@ const meta = DATA.meta || {};
 $("eyebrow").textContent = meta.eyebrow || "REGRESS";
 $("heading").textContent = meta.heading || "REGRESS";
 $("lede").textContent = meta.lede || "";
+if (Array.isArray(meta.links) && meta.links.length) {
+  const p = document.createElement("p");
+  p.className = "lede";
+  p.innerHTML = meta.links.map(l => `<a href="${esc(l.href)}">${esc(l.label)} →</a>`).join(" · ");
+  $("lede").after(p);
+}
 $("footer").textContent = meta.footer || "";
 if (meta.mode === "report") $("explain").hidden = true;
 { const fa = R().first_alarm; state.idx = fa === null ? N() - 1 : Math.max(0, idxOf(fa)); }

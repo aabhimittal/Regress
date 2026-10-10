@@ -30,7 +30,7 @@ for candidate in (HERE / "src", HERE.parent / "src"):  # Space layout, then repo
 import gradio as gr  # noqa: E402
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
-from fastapi.responses import HTMLResponse  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse  # noqa: E402
 
 from regress import __version__  # noqa: E402
 from regress.calibrate import calibrate  # noqa: E402
@@ -38,7 +38,7 @@ from regress.detector import CollapseDetector  # noqa: E402
 from regress.gate import gate, markdown_summary  # noqa: E402
 from regress.monitor import CycleReport, RegressionMonitor  # noqa: E402
 from regress.sim import SCENARIOS, Scenario, Simulation  # noqa: E402
-from regress.site import demo_payload, render, report_payload, simulate_payload  # noqa: E402
+from regress.site import build_results_index, demo_payload, render, report_payload, simulate_payload  # noqa: E402
 
 PAGES: "OrderedDict[str, str]" = OrderedDict()  # key -> html, small LRU
 MAX_PAGES = 48
@@ -159,6 +159,19 @@ def page(key: str) -> str:
     return html
 
 
+RESULTS_SRC = next((p for p in (HERE / "results", HERE.parent / "experiments" / "results") if p.is_dir()), None)
+RESULTS_OUT = Path(tempfile.gettempdir()) / "regress-real-results"
+HAS_RESULTS = RESULTS_SRC is not None and build_results_index(RESULTS_SRC, RESULTS_OUT) is not None
+
+
+@api.get("/real/{path:path}")
+def real_results(path: str = ""):
+    target = (RESULTS_OUT / (path or "index.html")).resolve()
+    if not HAS_RESULTS or RESULTS_OUT.resolve() not in target.parents or not target.is_file():
+        raise HTTPException(404, "No recorded real-model results in this deployment.")
+    return FileResponse(target, media_type="text/html")
+
+
 @api.get("/healthz")
 def healthz() -> dict:
     return {"ok": True, "version": __version__}
@@ -181,6 +194,13 @@ with gr.Blocks(title="REGRESS") as demo:
                     "Scrub the cycles or press play.")
         gr.HTML('<iframe src="/lab" title="REGRESS Collapse Lab" style="width:100%;height:1700px;border:0;border-radius:10px"></iframe>'
                 '<p style="font-size:13px"><a href="/lab" target="_blank">Open the lab full screen</a></p>')
+    if HAS_RESULTS:
+        with gr.Tab("Real language model"):
+            gr.Markdown("Recorded runs of a note-memory agent driven by a real model (Qwen2.5-0.5B-Instruct on CPU): "
+                        "faithful learning vs recursive self-summarisation. Reproducible offline with "
+                        "`regress experiment --backend replay --replay-from experiments/results/<run>`.")
+            gr.HTML('<iframe src="/real/index.html" title="Real-model results" '
+                    'style="width:100%;height:900px;border:0;border-radius:10px"></iframe>')
     with gr.Tab("Run your own scenario"):
         with gr.Row():
             preset = gr.Radio(["collapse", "healthy (no collapse)"], value="collapse", label="Learning regime")

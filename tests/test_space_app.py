@@ -41,3 +41,14 @@ def test_bad_upload_is_a_friendly_error(tmp_path):
         app.analyze(str(bad), "ALARM")
     with pytest.raises(Exception, match="Upload"):
         app.analyze(None, "ALARM")
+
+
+def test_real_results_route_and_path_traversal():
+    client = TestClient(app.app)
+    if not app.HAS_RESULTS:
+        pytest.skip("no recorded results")
+    page = client.get("/real/index.html")
+    assert page.status_code == 200 and "REGRESS on real language models" in page.text
+    assert client.get("/real/../../etc/passwd").status_code == 404
+    assert client.get("/real/%2e%2e/%2e%2e/etc/passwd").status_code == 404
+    assert client.get("/real/missing.html").status_code == 404

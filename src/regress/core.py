@@ -10,6 +10,8 @@ import numpy as np
 from ._canon import fingerprint
 
 __all__ = [
+    "supports_without",
+    "state_fingerprint",
     "Probe",
     "Response",
     "MemorySnapshot",
@@ -54,12 +56,24 @@ class Response:
 
 @dataclass
 class MemorySnapshot:
+    """The agent's memory at one point in time.
+
+    ``texts`` is optional but recommended: when present, REGRESS can measure diversity with
+    its own fixed embedder (``ruler="reference"``) instead of trusting the agent's vectors,
+    which the agent's learning loop may itself be changing.
+    """
+
     ids: list[str]
     embeddings: np.ndarray
     extra: dict[str, Any] = field(default_factory=dict)
+    texts: list[str] | None = None
 
     def __post_init__(self) -> None:
         self.ids = [str(i) for i in self.ids]
+        if self.texts is not None:
+            self.texts = [str(t) for t in self.texts]
+            if len(self.texts) != len(self.ids):
+                raise ValueError(f"{len(self.ids)} ids but {len(self.texts)} texts")
         emb = np.asarray(self.embeddings, dtype=float)
         if emb.size == 0 and len(self.ids) == 0 and emb.ndim < 2:
             emb = emb.reshape(0, 0)
@@ -84,6 +98,32 @@ class Agent(Protocol):
     def respond(self, probe: Probe) -> Response: ...
 
     def memory_snapshot(self) -> MemorySnapshot: ...
+
+
+# Optional capabilities. REGRESS checks for them with hasattr and degrades gracefully:
+#
+#   agent.without(memory_ids) -> Agent
+#       A copy of the agent with those memories removed. Enables ablation
+#       (``regress.ablation.confirm_blame``), which turns blame suspects into evidence.
+#
+#   agent.state_fingerprint() -> str
+#       Changes whenever anything that could change an answer changes. Enables the response
+#       cache (``regress.cache.ResponseCache``), so re-testing an unchanged checkpoint is free.
+
+
+def supports_without(agent: object) -> bool:
+    return callable(getattr(agent, "without", None))
+
+
+def state_fingerprint(agent: object) -> str | None:
+    fn = getattr(agent, "state_fingerprint", None)
+    if not callable(fn):
+        return None
+    try:
+        fp = fn()
+    except Exception:
+        return None
+    return str(fp) if fp else None
 
 
 class FunctionAgent:

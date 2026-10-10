@@ -112,6 +112,29 @@ class ToyAgent:
         label, conf, top = self._vote(probe.input)
         return Response(output=label, confidence=conf, retrieved=[self.mem.ids[i] for i in top])
 
+    def without(self, memory_ids) -> "ToyAgent":
+        """A copy with the given memories removed (enables ablation)."""
+        drop = {str(i) for i in memory_ids}
+        clone = copy.deepcopy(self)
+        keep = np.array([i not in drop for i in clone.mem.ids], dtype=bool)
+        m = clone.mem
+        m.emb, m.labels, m.strength = m.emb[keep], m.labels[keep], m.strength[keep]
+        m.ids = [i for i, k in zip(m.ids, keep) if k]
+        clone.usage = clone.usage[keep]
+        return clone
+
+    def state_fingerprint(self) -> str:
+        """Changes whenever anything that can change an answer changes (enables caching)."""
+        import hashlib
+
+        h = hashlib.sha256()
+        for arr in (self.mem.emb, self.mem.labels, self.mem.strength):
+            h.update(np.ascontiguousarray(arr).tobytes())
+        h.update("|".join(self.mem.ids).encode())
+        h.update(repr(sorted(self.answer_cache.items())).encode())
+        h.update(f"{self.k}:{self.importance_weight}".encode())
+        return h.hexdigest()
+
     def memory_snapshot(self) -> MemorySnapshot:
         return MemorySnapshot(ids=list(self.mem.ids), embeddings=self.mem.emb.copy())
 
@@ -189,6 +212,7 @@ SCENARIOS: dict[str, Scenario] = {
         Scenario("collapse", "Healthy until cycle 8, then self-reinforcing internalisation.", 8, 0.25),
         Scenario("slow", "Gentle collapse from cycle 5; thresholds trip late, onset estimate should not.", 5, 0.15),
         Scenario("leak", "From cycle 6 the public probes leak into an answer cache while learning degrades.", 6, 0.2, leak=True),
+        Scenario("creep", "Very gentle collapse from cycle 10: below every per-cycle tolerance for a long time.", 10, 0.08),
     )
 }
 
