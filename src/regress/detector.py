@@ -43,6 +43,19 @@ class Thresholds:
     probe_overfit: float = 0.05  # lower 95% bound of (public gain − held-out gain)
     error_rate: float = 0.05
 
+    def to_dict(self) -> dict[str, float]:
+        return {f: getattr(self, f) for f in self.__dataclass_fields__}
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, float]) -> "Thresholds":
+        unknown = set(d) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"unknown threshold(s): {sorted(unknown)}")
+        for k, v in d.items():
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
+                raise ValueError(f"threshold {k} must be a finite non-negative number, got {v!r}")
+        return cls(**{k: float(v) for k, v in d.items()})
+
 
 @dataclass(frozen=True)
 class SignalSpec:
@@ -52,10 +65,11 @@ class SignalSpec:
     direction: int  # +1: higher is worse, -1: lower is worse
     mode: str  # "abs" or "rel"
     weak: bool = False  # weak signals raise WATCH but never count toward an ALARM
+    se_metric: str | None = None  # standard error of the move; gates on statistical significance
 
 
 SIGNALS: tuple[SignalSpec, ...] = (
-    SignalSpec("accuracy_drop", "accuracy", "drift", -1, "abs"),
+    SignalSpec("accuracy_drop", "accuracy", "drift", -1, "abs", se_metric="accuracy_delta_se"),
     SignalSpec("output_shift", "output_jsd", "drift", +1, "abs"),
     SignalSpec("churn", "change_rate", "drift", +1, "abs", weak=True),
     SignalSpec("diversity_drop", "effective_rank", "diversity", -1, "rel"),
@@ -115,6 +129,7 @@ class CollapseDetector:
         min_categories: int = 2,
         patience: int = 1,
         noise_z: float = 3.0,
+        significance_z: float = 1.96,
         specs: Sequence[SignalSpec] = SIGNALS,
     ) -> None:
         if min_categories < 1:
@@ -125,7 +140,27 @@ class CollapseDetector:
         self.min_categories = min_categories
         self.patience = patience
         self.noise_z = noise_z
+        self.significance_z = significance_z
         self.specs = tuple(specs)
+
+    def config(self) -> dict:
+        return {
+            "thresholds": self.thresholds.to_dict(),
+            "min_categories": self.min_categories,
+            "patience": self.patience,
+            "noise_z": self.noise_z,
+            "significance_z": self.significance_z,
+        }
+
+    @classmethod
+    def from_config(cls, cfg: Mapping) -> "CollapseDetector":
+        return cls(
+            thresholds=Thresholds.from_dict(cfg.get("thresholds", {})),
+            min_categories=int(cfg.get("min_categories", 2)),
+            patience=int(cfg.get("patience", 1)),
+            noise_z=float(cfg.get("noise_z", 3.0)),
+            significance_z=float(cfg.get("significance_z", 1.96)),
+        )
 
     def signals(
         self, current: Mapping[str, float], baseline_window: Sequence[Mapping[str, float]]
@@ -148,6 +183,12 @@ class CollapseDetector:
             else:
                 excess = bad_move
             eff_tol = max(tol, self.noise_z * noise)
+            if spec.se_metric is not None:
+                # Paired standard error of the move (e.g. per-probe accuracy changes). A drop
+                # that a handful of coin-flip probes could explain is not called.
+                se = current.get(spec.se_metric, float("nan"))
+                if se is not None and math.isfinite(se):
+                    eff_tol = max(eff_tol, self.significance_z * se)
             if excess > eff_tol + 1e-12:
                 out.append(Signal(spec.name, spec.category, spec.metric, base, value, excess, eff_tol, spec.weak))
         return out, undefined

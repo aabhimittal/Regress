@@ -40,6 +40,10 @@ class CycleReport:
     errors: dict[str, str] = field(default_factory=dict)
     undefined: list[str] = field(default_factory=list)
     alarm_condition: bool = False
+    # Per-probe retrieval and confidence, kept so a regression can be traced to the memories
+    # that served it (see ``regress.blame``). Empty for histories saved before 0.2.
+    retrieved: dict[str, list[str]] = field(default_factory=dict)
+    confidences: dict[str, float | None] = field(default_factory=dict)
 
     @property
     def alarmed(self) -> bool:
@@ -50,6 +54,7 @@ class CycleReport:
         d["metrics"] = {k: _json_float(v) for k, v in self.metrics.items()}
         d["scores"] = {k: _json_float(v) for k, v in self.scores.items()}
         d["signals"] = [{k: _json_float(v) for k, v in asdict(s).items()} for s in self.signals]
+        d["confidences"] = {k: _json_float(v) for k, v in self.confidences.items()}
         return d
 
     @classmethod
@@ -67,6 +72,8 @@ class CycleReport:
             errors=dict(d.get("errors", {})),
             undefined=list(d.get("undefined", [])),
             alarm_condition=bool(d.get("alarm_condition", False)),
+            retrieved={k: list(v) for k, v in d.get("retrieved", {}).items()},
+            confidences={k: (None if v is None else float(v)) for k, v in d.get("confidences", {}).items()},
         )
 
 
@@ -76,6 +83,14 @@ def _json_float(v: Any) -> Any:
     if isinstance(v, (np.floating,)):
         return _json_float(float(v))
     return v
+
+
+def _confidence_or_none(c: Any) -> float | None:
+    try:
+        f = float(c)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _from_json_float(v: Any) -> Any:
@@ -106,6 +121,10 @@ class RegressionMonitor:
         Number of initial cycles whose median forms the baseline. With ``warmup >= 3`` the
         spread of those cycles also widens tolerances, so a noisy agent needs a bigger move
         to trip a signal.
+    on_alarm:
+        Called with the :class:`CycleReport` whenever the status *enters* ALARM (not on every
+        alarming cycle, so a sustained alarm pages once). Exceptions it raises are recorded
+        in ``report.errors["<on_alarm>"]`` instead of breaking the learning loop.
     """
 
     def __init__(
@@ -115,6 +134,7 @@ class RegressionMonitor:
         detector: CollapseDetector | None = None,
         output_key: Callable[[Any], str] = default_output_key,
         warmup: int = 1,
+        on_alarm: Callable[[CycleReport], Any] | None = None,
     ) -> None:
         if warmup < 1:
             raise ValueError("warmup must be >= 1")
@@ -123,6 +143,7 @@ class RegressionMonitor:
         self.detector = detector or CollapseDetector()
         self.output_key = output_key
         self.warmup = warmup
+        self.on_alarm = on_alarm
         self.fingerprint = suite.fingerprint
         self.history: list[CycleReport] = []
 
@@ -137,6 +158,8 @@ class RegressionMonitor:
         confs: list[float | None] = []
         conf_scores: list[float] = []
         retrieved: list[Sequence[str]] = []
+        per_probe_retrieved: dict[str, list[str]] = {}
+        per_probe_conf: dict[str, float | None] = {}
         errors: dict[str, str] = {}
         for probe in self.suite:
             try:
@@ -154,9 +177,13 @@ class RegressionMonitor:
             scores[probe.id] = score
             confs.append(resp.confidence)
             conf_scores.append(score)
-            retrieved.append(list(resp.retrieved or ()))
+            ids = [str(i) for i in (resp.retrieved or ())]
+            retrieved.append(ids)
+            per_probe_retrieved[probe.id] = ids
+            per_probe_conf[probe.id] = _confidence_or_none(resp.confidence)
         return dict(keys=keys, scores=scores, confs=confs, conf_scores=conf_scores,
-                    retrieved=retrieved, errors=errors)
+                    retrieved=retrieved, errors=errors, per_probe_retrieved=per_probe_retrieved,
+                    per_probe_conf=per_probe_conf)
 
     def _metrics(self, run: Mapping[str, Any], memory: MemorySnapshot | None, mem_error: str | None) -> dict[str, float]:
         nan = float("nan")
@@ -169,12 +196,20 @@ class RegressionMonitor:
 
         base = self.baseline
         if base is None:
-            m.update(output_jsd=0.0, change_rate=0.0, regressions=0.0, fixes=0.0, probe_overfit_gap=0.0)
+            m.update(output_jsd=0.0, change_rate=0.0, regressions=0.0, fixes=0.0, probe_overfit_gap=0.0,
+                     accuracy_delta_se=0.0)
         else:
             d = drift(base.output_keys, run["keys"], base.scores, scores)
             m.update(output_jsd=d.output_jsd, change_rate=d.change_rate,
                      regressions=float(d.regressions), fixes=float(d.fixes))
             m["probe_overfit_gap"] = self._overfit_lower_bound(base.scores, scores)
+            deltas = [c - base.scores[k] for k, c in scores.items()
+                      if k in base.scores and not math.isnan(c) and not math.isnan(base.scores[k])]
+            # Standard error of the paired accuracy change: the detector will not call a drop
+            # that a few coin-flip probes could explain.
+            m["accuracy_delta_se"] = (
+                float(np.std(deltas, ddof=1) / math.sqrt(len(deltas))) if len(deltas) >= 2 else nan
+            )
 
         if memory is not None:
             dv = diversity(memory.embeddings)
@@ -270,9 +305,17 @@ class RegressionMonitor:
             errors=errors,
             undefined=assessment.undefined,
             alarm_condition=CollapseDetector.alarm_condition(assessment, self.detector.min_categories),
+            retrieved=run["per_probe_retrieved"],
+            confidences=run["per_probe_conf"],
         )
         if record:
+            entered = report.alarmed and not (self.history and self.history[-1].alarmed)
             self.history.append(report)
+            if entered and self.on_alarm is not None:
+                try:
+                    self.on_alarm(report)
+                except Exception as exc:  # a broken pager must not break the learning loop
+                    report.errors["<on_alarm>"] = f"{type(exc).__name__}: {exc}"
         return report
 
     # ------------------------------------------------------------------ queries
@@ -288,6 +331,7 @@ class RegressionMonitor:
             "format": FORMAT_VERSION,
             "suite_fingerprint": self.fingerprint,
             "warmup": self.warmup,
+            "detector": self.detector.config(),
             "history": [r.to_dict() for r in self.history],
         }
 
@@ -309,6 +353,8 @@ class RegressionMonitor:
         except ProbeSuiteTampered as exc:  # the suite object was mutated after construction
             raise ProbeSuiteMismatch(str(exc)) from exc
         kwargs.setdefault("warmup", data.get("warmup", 1))
+        if "detector" not in kwargs and data.get("detector"):
+            kwargs["detector"] = CollapseDetector.from_config(data["detector"])
         mon = cls(suite, **kwargs)
         mon.history = [CycleReport.from_dict(r) for r in data["history"]]
         return mon

@@ -1,0 +1,49 @@
+name: Sync Hugging Face Space
+
+# Uploads space/ plus the library source to a Gradio Space on every push to main.
+# Needs a repository secret HF_TOKEN (a Hugging Face token with write access) and,
+# optionally, a repository variable HF_SPACE (default: abhimittal/regress).
+# Without the secret the job logs a notice and does nothing, so it never turns CI red.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE: ${{ vars.HF_SPACE || 'abhimittal/regress' }}
+    steps:
+      - name: Skip when no token is configured
+        if: env.HF_TOKEN == ''
+        run: echo "::notice::HF_TOKEN secret not set; skipping the Hugging Face Space sync."
+      - uses: actions/checkout@v4
+        if: env.HF_TOKEN != ''
+      - uses: actions/setup-python@v5
+        if: env.HF_TOKEN != ''
+        with:
+          python-version: "3.12"
+      - name: Create the Space if needed and upload
+        if: env.HF_TOKEN != ''
+        run: |
+          pip install "huggingface_hub>=0.24"
+          mkdir -p _space/src
+          cp -r space/. _space/
+          cp -r src/regress _space/src/
+          find _space -name __pycache__ -prune -exec rm -rf {} +
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          repo = os.environ["HF_SPACE"]
+          api.create_repo(repo, repo_type="space", space_sdk="gradio", exist_ok=True)
+          api.upload_folder(
+              folder_path="_space", repo_id=repo, repo_type="space",
+              commit_message=f"Sync from GitHub {os.environ.get('GITHUB_SHA', '')[:7]}",
+              delete_patterns=["src/**"],
+          )
+          print(f"Space: https://huggingface.co/spaces/{repo}")
+          PY
