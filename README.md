@@ -156,9 +156,104 @@ regress experiment --backend anthropic --out runs/claude      # needs Anthropic 
 ```
 
 The recorded model outputs (`llm-cache.jsonl`) are committed. `--backend replay` re-runs the
-whole experiment bit-for-bit without the model, and CI does exactly that. **Scope:** one
-small model, one synthetic task, one seed. It is evidence that the detector works on a real
-learning loop, not a benchmark of how real agents fail.
+whole experiment bit-for-bit without the model, and CI does exactly that.
+
+### Broader evidence: 3 models, 2 tasks, 3 seeds
+
+One model, one task and one seed could be a coincidence, so `experiments/run_matrix.py` repeats
+the experiment across **Qwen2.5‑0.5B, Qwen2.5‑1.5B and Llama‑3.2‑1B** (Q4 GGUF, CPU), seeds
+0–2, and a second task. In **multihop**, "X works at C" and "C is based in Z" are separate
+notes, and "In which city does X work?" needs both, so consolidation can break the chain
+without dropping either fact. Each job: 16 people, 6 cycles, 6 regimes on identical worlds. A
+quarter of the questions are held back in an **audit** suite that only reports. *New facts*
+is accuracy at the end on facts that arrived **during** the run, scored on a fixed half the
+guard never uses.
+
+| model · task · seed | control | full: alarm at (acc then → end) | gradual: alarm at (acc then → end) | guard: old / audit / new facts | guard+learn: old / audit / new facts · compressions kept |
+|---|---|---|---|---|---|
+| llama3.2-1b · facts · s0 | quiet | cycle 1 (0.14 → 0.03) | cycle 1 (0.78 → 0.19) | 0.94 / 1.00 / 0.37 | 0.97 / 0.92 / 0.95 · 0% |
+| qwen2.5-0.5b · facts · s0 | quiet | cycle 1 (0.47 → 0.00) | cycle 2 (0.75 → 0.36) | 0.94 / 0.92 / 0.33 | 1.00 / 1.00 / 1.00 · 0% |
+| qwen2.5-0.5b · facts · s1 | quiet | cycle 1 (0.53 → 0.00) | cycle 2 (0.75 → 0.42) | 0.92 / 0.92 / 0.18 | 1.00 / 1.00 / 1.00 · 0% |
+| qwen2.5-0.5b · facts · s2 | quiet | cycle 1 (0.33 → 0.14) | cycle 1 (0.78 → 0.28) | 0.94 / 0.92 / 0.35 | 1.00 / 1.00 / 1.00 · 0% |
+| qwen2.5-0.5b · multihop · s0 | quiet (2× watch) | cycle 1 (0.12 → 0.08) | cycle 1 (0.12 → 0.08) | 0.75 / 0.62 / 0.21 | 0.96 / 0.88 / 0.84 · 0% |
+| qwen2.5-1.5b · facts · s0 | quiet | cycle 1 (0.19 → 0.06) | cycle 1 (0.86 → 0.28) | 0.94 / 0.92 / 0.72 | 1.00 / 1.00 / 1.00 · 0% |
+
+Old / audit = accuracy at the end on the gate suite / held-out audit suite (baseline 1.00,
+except Llama 0.97 / 0.92 and multihop 0.83 / 0.88). Full per-cycle table:
+[`experiments/results/MATRIX.md`](experiments/results/MATRIX.md). Every job replays
+bit-for-bit in the tests.
+
+What held across all 6 jobs:
+
+* **No false alarms, every bad regime caught.** The control never alarmed. On multihop it
+  raised a single-signal WATCH for two cycles: confidence rose *together with* accuracy
+  (0.83 → 1.00), a benign change the two-category rule kept from alarming. *Full* alarmed at
+  cycle 1 in 6/6 jobs, and *gradual* alarmed at cycle 1–2 in 6/6.
+* **Early warning is real when damage is gradual, and it is a property of the damage, not
+  of the policy.** On facts, *gradual* had lost 0.14–0.25 accuracy at the first alarm and
+  0.58–0.78 by the end. On multihop, the same "compress the oldest 25 %" policy was
+  *abrupt* (0.83 → 0.12 in one cycle). The oldest notes are the company → city notes that
+  every two-hop chain runs through, so a small edit hit a hub.
+* **Monitoring cannot prevent abrupt damage. Gating can.** That is the next section.
+
+Scope still: small open models, synthetic fictional-fact tasks, a note-memory agent, and
+one seed for the non-Qwen‑0.5B jobs. This is evidence about this learning loop across
+models, not a benchmark of how production agents fail.
+
+---
+
+## Stop the damage before it lands: the consolidation guard
+
+Monitoring after the fact cannot warn about damage that happens in a single step. In the
+*full* regime above, accuracy had already fallen to 0.12–0.53 (from 0.83–1.00) at the first check
+that could see it. Early warning exists only when damage accumulates. The fix is to move
+the check **in front of the commit**, which is what regression testing means in CI:
+
+```python
+from regress.guard import ConsolidationGuard
+
+guard = ConsolidationGuard(monitor, block_on=("ALARM", "WATCH"))   # baseline already recorded
+stages = [("observe", ingest_new_data), ("compress", consolidate)]  # each fn(agent) mutates it
+agent, report = guard.run_cycle(agent, cycle, stages)              # the agent you keep
+guard.summary()   # decisions, rejected, rejection_rate, accept_rate_by_stage
+```
+
+Each stage is applied to a **copy** of the agent and run against the frozen suite. The copy
+is kept only if it passes; otherwise the previous agent is kept and the rejection is logged.
+Splitting a cycle into stages means a bad stage costs only that stage. Every candidate is
+compared with the **baseline**, not the previous cycle, so many small accepted steps cannot
+add up past the tolerance either. With a response cache, the committed report is free,
+because the copy that passed was already evaluated.
+
+**Two failure modes of a naive guard, both found on real models, and the options that fix them:**
+
+1. **It refuses to learn.** A frozen suite protects only what the agent knew at cycle 0.
+   New observations crowd retrieval for old facts, so a strict guard rejected the
+   *observe* stage in up to half the cycles. A compression that destroys recent facts
+   passes, because no probe asks about them. Across the 6 jobs, the plain guard kept old
+   facts at 0.75–0.94 but answered only **0.18–0.72** of the facts that arrived during the
+   run (control: 0.84–1.00). On Qwen‑0.5B that is no better than not guarding at all
+   (0.21–0.28).
+2. **It can lock up.** If data that must be accepted pushes the agent over the line, every
+   later candidate fails against the baseline, and nothing can be consolidated again.
+
+`commit_always=("observe",)` commits data-bearing stages unconditionally (logged as
+`FORCED`). `retention=fn` also rejects a stage that lowers accuracy on *recently learned*
+knowledge by more than `retention_tolerance`. Once a forced stage has crossed the line,
+candidates are judged against the committed agent: no worse status and no lower accuracy.
+The recorded report still shows the regression. In the experiment harness this is
+`guard="strict", guard_learning=True` (CLI: `--guard learn`). The retention check uses half
+of the newly learned facts, and the other half is held out for scoring.
+
+**What the guard cannot do:** make consolidation good. The learning-aware guard matched the
+control in every job: old facts 0.96–1.00, new facts 0.84–1.00, audit unchanged. It got
+there by rejecting **every** compression in all 6 jobs. Memory grew like the
+no-compression control, and on Qwen‑0.5B past it, because the agent's self-written notes
+were accepted (153 vs 120 notes). The guard turns a bad consolidation policy into *no* consolidation and tells
+you so through `accept_rate_by_stage`. Read a high rejection rate as an alarm about the
+policy, not as success. It also optimises against the gate suite. Keep an **audit suite**
+the guard never sees (`audit_fraction=0.25` in the harness) and compare the two. If the
+gate stays green while the audit falls, the guard is overfitting its own test.
 
 ---
 
@@ -489,8 +584,18 @@ turns CI red.
   which runs were healthy.
 * **The simulator is a cartoon.** Its collapse mechanism (hub attraction plus
   importance-weighted retrieval plus self-labelling) was designed to produce the
-  signature. The real-agent experiment (see *Does it work on a real agent?*) is the
-  evidence that matters, and it is one small model on one synthetic task.
+  signature. The real-agent matrix (see *Broader evidence*) is the evidence that matters:
+  3 small open models, 2 synthetic tasks, a note-memory agent. Production agents, tool use
+  and long horizons are untested.
+* **Monitoring cannot warn about one-step damage.** If one update destroys half the
+  knowledge, the first check that can see it comes after it. Use the consolidation guard
+  to test *before* committing.
+* **The guard protects; it does not improve.** With small models, the learning-aware
+  guard rejected 100 % of compressions in all 6 jobs, so memory grew like the
+  no-compression control (or past it, with self-notes). A plain guard on a frozen suite
+  keeps old knowledge by refusing new knowledge. Use `commit_always` and `retention`, and
+  watch `accept_rate_by_stage`. Each guarded stage costs a suite evaluation (about 3× the
+  probe calls of an unguarded run here).
 * **Expressed confidence is only as meaningful as the agent's self-report.** Agents without
   a confidence channel lose half of the collapse signature and fall back on the
   multi-category rule.
@@ -526,6 +631,7 @@ src/regress/
   site.py        build the interactive lab / HTML reports (template in assets/lab.html)
   report.py      terminal tables, sparklines, verdicts
   ablation.py    confirm blame suspects by removing them (agent.without)
+  guard.py       ConsolidationGuard: test each learning stage on a copy before committing
   cache.py       response cache keyed on (agent state, probe)
   llm/           real-agent harness: backends (llama.cpp, Claude, rules), fact world, note agent, experiment
   cli.py         regress demo | show | site | report | gate | calibrate | blame | health | experiment
@@ -539,7 +645,7 @@ Dependencies: `numpy` only. Python ≥ 3.10.
 
 ```bash
 pip install -e ".[test]" ruff
-pytest              # ~200 tests, including Hypothesis property tests
+pytest              # ~230 tests, including Hypothesis property tests
 ruff check src tests examples
 ```
 

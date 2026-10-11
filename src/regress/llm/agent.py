@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import random
+import re
 from collections import OrderedDict
 from typing import Iterable, Sequence
 
@@ -29,7 +30,6 @@ import numpy as np
 from ..adapters import HashingEmbedder
 from ..core import MemorySnapshot, Probe, Response
 from .backends import Backend
-from .world import Fact
 
 __all__ = ["NoteAgent", "REGIMES"]
 
@@ -54,6 +54,8 @@ class NoteAgent:
         embedder: HashingEmbedder | None = None,
         seed: int = 0,
         compress_fraction: float = 1.0,
+        compress_chunks: int = 1,
+        hops: int = 1,
     ) -> None:
         if regime not in REGIMES:
             raise ValueError(f"regime must be one of {REGIMES}")
@@ -62,6 +64,12 @@ class NoteAgent:
         if not 0 < compress_fraction <= 1:
             raise ValueError("compress_fraction must be in (0, 1]")
         self.compress_fraction = compress_fraction
+        if compress_chunks < 1:
+            raise ValueError("compress_chunks must be >= 1")
+        self.compress_chunks = compress_chunks
+        if hops not in (1, 2):
+            raise ValueError("hops must be 1 or 2")
+        self.hops = hops
         self.backend = backend
         self.regime = regime
         self.k = k
@@ -113,7 +121,22 @@ class NoteAgent:
         q = self.embedder.embed([query])[0]
         sims = mat @ q
         order = sorted(range(len(ids)), key=lambda j: (-sims[j], ids[j]))[: self.k]
-        return [ids[j] for j in order]
+        first = [ids[j] for j in order]
+        if self.hops == 1:
+            return first
+        # Second hop: query with the entity the first note introduced (words it has that the
+        # question lacks, capitalised ones preferred), re-ranked MMR-style so notes that merely
+        # resemble the first note ("Y also works at C") lose to notes that extend it ("C is
+        # based in Z"). Up to k more notes, duplicates removed.
+        asked = {w.lower() for w in re.findall(r"[A-Za-z']+", query)}
+        novel = [w for w in re.findall(r"[A-Za-z']+", self.notes[first[0]]) if w.lower() not in asked]
+        caps = [w for w in novel if w[:1].isupper()]
+        q2 = self.embedder.embed([" ".join(caps or novel) or self.notes[first[0]]])[0]
+        anchor = mat[ids.index(first[0])]
+        sims2 = mat @ q2 - 0.7 * (mat @ anchor)
+        order2 = sorted(range(len(ids)), key=lambda j: (-sims2[j], ids[j]))
+        extra = [ids[j] for j in order2 if ids[j] not in first][: self.k]
+        return first + extra
 
     # -- REGRESS protocol -------------------------------------------------------------
     def respond(self, probe: Probe) -> Response:
@@ -155,26 +178,54 @@ class NoteAgent:
         return c
 
     # -- learning ---------------------------------------------------------------------
-    def learn(self, cycle: int, observations: Sequence[Fact], questions: Sequence[Fact] = ()) -> dict:
-        """One learning cycle. Returns a small log of what consolidation did."""
+    def learn(self, cycle: int, observations: Sequence, questions: Sequence = ()) -> dict:
+        """One learning cycle (all stages, unguarded). Returns a log of what consolidation did."""
         log = {"cycle": cycle, "added": 0, "self_notes": 0, "summaries": 0, "removed": 0}
-        log["added"] = len(self.add_notes([f.text for f in observations], cycle))
+        for _, apply in self.learn_stages(cycle, observations, questions):
+            for k, v in apply(self).items():
+                log[k] = log.get(k, 0) + v
+        return log
+
+    def learn_stages(self, cycle: int, observations: Sequence, questions: Sequence = ()) -> list:
+        """The cycle as separable stages ``[(name, apply(agent) -> log)]``.
+
+        A :class:`~regress.guard.ConsolidationGuard` applies each stage to a copy, tests it,
+        and keeps only the stages that pass. The compression stage is split into
+        ``compress_chunks`` pieces so one bad batch of summaries costs one piece, not the cycle.
+        """
+        texts = [f.text for f in observations]
+        stages = [("observe", lambda a: {"added": len(a.add_notes(texts, cycle))})]
         if self.regime == "faithful":
-            return log
-        rng = random.Random(self.seed * 7919 + cycle)
-        # (a) self-training: answer questions without feedback, keep the answers as memory.
-        if questions and self.self_train:
-            for f in rng.sample(list(questions), min(self.self_train, len(questions))):
-                ans = self.respond(Probe(f"self{cycle}", f.question)).output
-                log["self_notes"] += len(self.add_notes([f"{f.question} {ans}"], cycle))
-        # (b) recursive compression of the oldest notes (all of them by default; a fraction
-        # makes the damage gradual, which is where early warning would matter).
+            return stages
+        qs = list(questions)
+
+        def self_train(a: "NoteAgent") -> dict:
+            if not qs or not a.self_train:
+                return {"self_notes": 0}
+            rng = random.Random(a.seed * 7919 + cycle)
+            n = 0
+            for f in rng.sample(qs, min(a.self_train, len(qs))):
+                ans = a.respond(Probe(f"self{cycle}", f.question)).output
+                n += len(a.add_notes([f"{f.question} {ans}"], cycle))
+            return {"self_notes": n}
+
+        stages.append(("self_train", self_train))
+        chunks = max(1, self.compress_chunks)
+        for k in range(chunks):
+            stages.append((f"compress_{k + 1}/{chunks}" if chunks > 1 else "compress",
+                           lambda a, k=k, chunks=chunks: a._compress(cycle, k, chunks)))
+        return stages
+
+    def _compress(self, cycle: int, chunk: int = 0, chunks: int = 1) -> dict:
+        """Compress the oldest notes (``compress_fraction`` of them), slice ``chunk`` of ``chunks``."""
+        log = {"summaries": 0, "removed": 0}
         old = [i for i in self.notes if self.created[i] < cycle]
         old = old[: max(2, int(round(len(old) * self.compress_fraction)))] if old else old
+        if chunks > 1:
+            size = -(-len(old) // chunks)
+            old = old[chunk * size:(chunk + 1) * size]
         while len(old) >= 2:
             seed_id = old.pop(0)
-            if len(old) == 0:
-                break
             vecs = self._vectors([self.notes[i] for i in old])
             sims = vecs @ self._vectors([self.notes[seed_id]])[0]
             nearest = [old[j] for j in np.argsort(-sims)[: self.group - 1]]

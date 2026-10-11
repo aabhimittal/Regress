@@ -15,7 +15,9 @@ The verdict that matters is whether REGRESS separates the regimes: alarms on
 
 from __future__ import annotations
 
+import hashlib
 import json
+import random
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -26,10 +28,11 @@ from ..adapters import text_key
 from ..bisect import bisect_checkpoints, locate_onset
 from ..cache import ResponseCache
 from ..detector import CollapseDetector
+from ..guard import ConsolidationGuard
 from ..monitor import RegressionMonitor
 from .agent import NoteAgent
 from .backends import Backend
-from .world import FactWorld, answer_score
+from .world import answer_score, make_world
 
 __all__ = ["RegimeResult", "run_regime", "run_experiment"]
 
@@ -53,6 +56,15 @@ class RegimeResult:
     cache_hits: int = 0
     seconds: float = 0.0
     consolidation: list[dict] = field(default_factory=list)
+    task: str = "facts"
+    guarded: bool = False
+    guard: dict | None = None  # rejection statistics when guarded
+    audit_accuracy: list[float] | None = None  # accuracy on probes the guard never saw
+    # Plasticity: accuracy at the end on facts that arrived *during* the run. The frozen suite
+    # cannot see whether the agent still learns; a guard that protects old facts by refusing
+    # new ones shows up here.
+    fresh_accuracy: float | None = None
+    fresh_probes: int = 0
 
 
 def run_regime(
@@ -66,30 +78,93 @@ def run_regime(
     out_dir: str | Path | None = None,
     ablate: bool = True,
     agent_kwargs: dict | None = None,
+    task: str = "facts",
+    guard: bool | str = False,
+    audit_fraction: float = 0.0,
+    label: str | None = None,
+    guard_learning: bool = False,
+    measure_fresh: bool = True,
 ) -> tuple[RegimeResult, RegressionMonitor, list[NoteAgent]]:
+    """Run one regime. ``guard=True`` gates every learning stage on a REGRESS check of the
+    candidate (see :mod:`regress.guard`), rejecting ALARM; ``guard="strict"`` also rejects WATCH. ``audit_fraction`` holds back that share of the
+    probe questions in a separate audit suite that only reports, never decides.
+
+    ``guard_learning=True`` makes the guard learning-aware: observations are always committed,
+    and consolidation stages must also keep accuracy on half of the facts learned so far.
+    The other half of those facts is never used by the guard; ``fresh_accuracy`` is measured
+    on it for every regime, so guarded and unguarded runs are scored on the same questions."""
+    if not 0 <= audit_fraction < 1:
+        raise ValueError("audit_fraction must be in [0, 1)")
     t0 = time.time()
     calls0 = getattr(backend, "calls", 0)
-    world = FactWorld(n_people=people, seed=seed)
-    initial = list(world.facts)
-    suite = world.probe_suite(initial)
+    world = make_world(task, people, seed)
+    questions = list(world.initial_questions())
+    initial = set(questions)
+    audit_qs: list = []
+    if audit_fraction > 0:
+        rng = random.Random(seed + 4242)
+        idx = sorted(rng.sample(range(len(questions)), max(1, int(round(len(questions) * audit_fraction)))))
+        audit_qs = [questions[i] for i in idx]
+        questions = [q for i, q in enumerate(questions) if i not in set(idx)]
+    suite = world.probe_suite(questions)
     agent = NoteAgent(backend, regime=regime, seed=seed, **(agent_kwargs or {}))
-    agent.add_notes([f.text for f in initial], cycle=0)
+    agent.add_notes(world.initial_notes(), cycle=0)
     cache = ResponseCache()
     monitor = RegressionMonitor(suite, scorer=answer_score, output_key=text_key(), detector=detector,
                                 ruler="reference", cache=cache)
+    audit = None
+    if audit_qs:
+        audit_suite = world.probe_suite(audit_qs)
+        audit = RegressionMonitor(audit_suite, scorer=answer_score, output_key=text_key(), ruler="reference",
+                                  cache=cache, bootstrap=0)
+        audit.evaluate(agent, 0)
+    if guard not in (False, True, "strict"):
+        raise ValueError("guard must be False, True or 'strict'")
+    if guard_learning and not guard:
+        raise ValueError("guard_learning needs guard=True or 'strict'")
+
+    def fresh_split(gate_half: bool) -> list:
+        qs = [q for q in world.all_questions() if q not in initial]
+        return [q for q in qs if (hashlib.sha256(q.question.encode()).digest()[0] % 2 == 1) == gate_half]
+
+    def accuracy_on(a: NoteAgent, qs: list) -> float:
+        if not qs:
+            return 1.0
+        return float(sum(answer_score(p, a.respond(p).output) for p in world.probe_suite(qs)) / len(qs))
+
+    gate = None
+    if guard:
+        gate = ConsolidationGuard(
+            monitor, block_on=("ALARM", "WATCH") if guard == "strict" else ("ALARM",),
+            commit_always=("observe",) if guard_learning else (),
+            retention=(lambda a: accuracy_on(a, fresh_split(True))) if guard_learning else None)
     checkpoints = [agent.clone()]
     monitor.evaluate(agent, 0)
     logs = []
     for c in range(1, cycles + 1):
-        new = world.add_people(new_people_per_cycle)
-        logs.append(agent.learn(c, observations=new, questions=world.facts))
+        new = world.grow(new_people_per_cycle)
+        if gate is not None:
+            stages = agent.learn_stages(c, observations=new, questions=world.all_questions())
+            log: dict = {"cycle": c}
+            agent, _ = gate.run_cycle(agent, c, stages)
+            kept = [d.stage for d in gate.decisions if d.cycle == c and d.accepted]
+            log["kept_stages"] = kept
+            log["rejected_stages"] = [d.stage for d in gate.decisions if d.cycle == c and not d.accepted]
+            logs.append(log)
+        else:
+            logs.append(agent.learn(c, observations=new, questions=world.all_questions()))
+            monitor.evaluate(agent, c)
         checkpoints.append(agent.clone())
-        monitor.evaluate(agent, c)
+        if audit is not None:
+            audit.evaluate(agent, c)
+
+    fresh = fresh_split(False) if measure_fresh else []
+    fresh_acc = accuracy_on(agent, fresh) if fresh else None
 
     hist = monitor.history
     first = monitor.first_alarm()
     res = RegimeResult(
-        regime=regime,
+        regime=label or regime,
         first_alarm=first.cycle if first else None,
         first_signal=next((h.cycle for h in hist[1:] if h.signals), None),
         statuses=[h.status for h in hist],
@@ -99,6 +174,12 @@ def run_regime(
         mean_confidence=[h.metrics["mean_confidence"] for h in hist],
         memory_size=[h.metrics["memory_size"] for h in hist],
         consolidation=logs,
+        task=task,
+        guarded=bool(guard),
+        guard=gate.summary() if gate is not None else None,
+        audit_accuracy=[h.metrics["accuracy"] for h in audit.history] if audit is not None else None,
+        fresh_accuracy=fresh_acc,
+        fresh_probes=len(fresh),
     )
     if first is not None:
         b = bisect_checkpoints(
@@ -113,7 +194,8 @@ def run_regime(
             res.ablation = {k: v for k, v in asdict(ab).items() if k != "regressed"} | {
                 "regressed": len(ab.regressed)}
     cost = monitor.cost()
-    res.probe_calls = int(cost["probe_calls"])
+    res.probe_calls = int(cost["probe_calls"]) + (int(audit.cost()["probe_calls"]) if audit else 0) + int(
+        sum(d.probe_calls for d in gate.decisions) if gate else 0)
     res.cache_hits = int(cache.stats.hits)
     res.model_calls = getattr(backend, "calls", 0) - calls0
     res.seconds = round(time.time() - t0, 1)
@@ -121,11 +203,12 @@ def run_regime(
     if out_dir is not None:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        monitor.save(out / f"history-{regime}.json")
+        name = label or regime
+        monitor.save(out / f"history-{name}.json")
         from ..site import render, report_payload
 
-        title = f"Real agent ({backend.name}), regime: {regime}"
-        (out / f"report-{regime}.html").write_text(render(report_payload(hist, title=title)), encoding="utf-8")
+        title = f"Real agent ({backend.name}), {task} task, regime: {name}"
+        (out / f"report-{name}.html").write_text(render(report_payload(hist, title=title)), encoding="utf-8")
     return res, monitor, checkpoints
 
 
@@ -136,18 +219,33 @@ def run_experiment(
     **kwargs: Any,
 ) -> dict[str, Any]:
     results = {}
+    specs = []
     for regime in regimes:
-        res, _, _ = run_regime(backend, regime, out_dir=out_dir, **kwargs)
-        results[regime] = asdict(res)
+        specs.append({"label": regime, "regime": regime, "overrides": {}} if isinstance(regime, str)
+                     else {"label": regime[0], "regime": regime[1], "overrides": regime[2]})
+        if isinstance(regime, str):
+            res, _, _ = run_regime(backend, regime, out_dir=out_dir, **kwargs)
+        else:  # (label, regime, overrides) for variants such as guarded or gradual runs
+            label, base, overrides = regime
+            res, _, _ = run_regime(backend, base, out_dir=out_dir, label=label, **(kwargs | overrides))
+        results[res.regime] = asdict(res)
     summary = {
         "backend": backend.name,
         "settings": {k: v for k, v in kwargs.items() if k != "detector"},
+        "regime_specs": specs,
         "results": results,
-        "separates": (
-            results.get("faithful", {}).get("first_alarm") is None
-            and results.get("recursive_summary", {}).get("first_alarm") is not None
-        ) if {"faithful", "recursive_summary"} <= set(results) else None,
+        "separates": _separates(results),
     }
     if out_dir is not None:
         Path(out_dir, "summary.json").write_text(json.dumps(summary, indent=1, default=str))
     return summary
+
+
+def _separates(results: dict) -> bool | None:
+    """True when the control stays quiet and every unguarded bad regime alarms."""
+    control = results.get("faithful")
+    bad = [r for name, r in results.items() if name != "faithful" and not r.get("guarded")
+           and name in ("recursive_summary", "full", "gradual")]
+    if control is None or not bad:
+        return None
+    return control.get("first_alarm") is None and all(r.get("first_alarm") is not None for r in bad)
