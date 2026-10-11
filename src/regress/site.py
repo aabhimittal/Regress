@@ -287,8 +287,8 @@ def build_results_index(results_dir: str | Path, out_dir: str | Path) -> Path | 
     """Copy recorded real-agent reports and write an index page. None if nothing recorded."""
     import shutil
 
-    runs = sorted(p for p in Path(results_dir).iterdir() if (p / "summary.json").is_file()) \
-        if Path(results_dir).is_dir() else []
+    root = Path(results_dir)
+    runs = sorted(p.parent for p in root.rglob("summary.json")) if root.is_dir() else []
     if not runs:
         return None
     out = Path(out_dir)
@@ -296,8 +296,9 @@ def build_results_index(results_dir: str | Path, out_dir: str | Path) -> Path | 
     rows = []
     for run in runs:
         summary = json.loads((run / "summary.json").read_text())
-        dest = out / run.name
-        dest.mkdir(exist_ok=True)
+        name = run.relative_to(root).as_posix()
+        dest = out / name
+        dest.mkdir(parents=True, exist_ok=True)
         for rep in run.glob("report-*.html"):
             shutil.copy(rep, dest / rep.name)
         st = summary.get("settings", {})
@@ -307,14 +308,20 @@ def build_results_index(results_dir: str | Path, out_dir: str | Path) -> Path | 
             marks = "".join({"OK": "·", "WATCH": "~", "ALARM": "▲"}.get(x, "?") for x in r.get("statuses", []))
             ab = r.get("ablation") or {}
             verdict = f"{ab.get('verdict')} ({ab.get('recovered')}/{ab.get('regressed')} vs controls {ab.get('control_recovered')})" if ab else "–"
+            g, audit = r.get("guard"), r.get("audit_accuracy") or []
+            if g:
+                verdict = f"guard rejected {g.get('rejected')}/{g.get('decisions')} stages"
+            if audit:
+                verdict += f"; audit {audit[0]:.2f} → {audit[-1]:.2f}"
             rows.append(
-                f"<tr><td>{_escape(run.name)}</td><td>{_escape(regime)}"
+                f"<tr><td>{_escape(name)}</td><td>{_escape(regime)}"
                 f"{' (gradual ' + format(frac, 'g') + ')' if regime == 'recursive_summary' and frac < 1 else ''}</td>"
                 f"<td class=m>{marks}</td><td class=m>{r.get('first_alarm')}</td><td class=m>{acc}</td>"
-                f"<td>{_escape(verdict)}</td><td><a href=\"{_escape(run.name)}/report-{_escape(regime)}.html\">report</a></td></tr>"
+                f"<td>{_escape(verdict)}</td><td><a href=\"{_escape(name)}/report-{_escape(regime)}.html\">report</a></td></tr>"
             )
         backend = _escape(summary.get("backend", "?"))
-        rows.append(f"<tr class=note><td colspan=7>{backend} · {st.get('cycles')} cycles · "
+        model = f" ({_escape(summary['model'])})" if summary.get("model") else ""
+        rows.append(f"<tr class=note><td colspan=7>{backend}{model} · {st.get('task', 'facts')} · seed {st.get('seed')} · {st.get('cycles')} cycles · "
                     f"{st.get('people')} people · separates regimes: {summary.get('separates')}</td></tr>")
     page = out / "index.html"
     page.write_text(_RESULTS_PAGE.replace("__ROWS__", "\n".join(rows)), encoding="utf-8")
@@ -339,7 +346,7 @@ regime stores new facts verbatim; <b>recursive_summary</b> self-trains on its ow
 compress its notes every cycle. REGRESS should stay quiet on the first and alarm on the second.
 Status per cycle: · ok, ~ watch, ▲ alarm.</p>
 <div class="t"><table><thead><tr><th>run</th><th>regime</th><th>status</th><th>first alarm</th>
-<th>accuracy by cycle</th><th>ablation of blame suspects</th><th></th></tr></thead><tbody>
+<th>accuracy by cycle</th><th>ablation / guard</th><th></th></tr></thead><tbody>
 __ROWS__
 </tbody></table></div>
 <p><a href="../">← back to the simulator lab</a></p></div></body></html>
