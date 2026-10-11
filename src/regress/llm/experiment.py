@@ -15,6 +15,7 @@ The verdict that matters is whether REGRESS separates the regimes: alarms on
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import time
@@ -59,6 +60,11 @@ class RegimeResult:
     guarded: bool = False
     guard: dict | None = None  # rejection statistics when guarded
     audit_accuracy: list[float] | None = None  # accuracy on probes the guard never saw
+    # Plasticity: accuracy at the end on facts that arrived *during* the run. The frozen suite
+    # cannot see whether the agent still learns; a guard that protects old facts by refusing
+    # new ones shows up here.
+    fresh_accuracy: float | None = None
+    fresh_probes: int = 0
 
 
 def run_regime(
@@ -76,16 +82,24 @@ def run_regime(
     guard: bool | str = False,
     audit_fraction: float = 0.0,
     label: str | None = None,
+    guard_learning: bool = False,
+    measure_fresh: bool = True,
 ) -> tuple[RegimeResult, RegressionMonitor, list[NoteAgent]]:
     """Run one regime. ``guard=True`` gates every learning stage on a REGRESS check of the
     candidate (see :mod:`regress.guard`), rejecting ALARM; ``guard="strict"`` also rejects WATCH. ``audit_fraction`` holds back that share of the
-    probe questions in a separate audit suite that only reports, never decides."""
+    probe questions in a separate audit suite that only reports, never decides.
+
+    ``guard_learning=True`` makes the guard learning-aware: observations are always committed,
+    and consolidation stages must also keep accuracy on half of the facts learned so far.
+    The other half of those facts is never used by the guard; ``fresh_accuracy`` is measured
+    on it for every regime, so guarded and unguarded runs are scored on the same questions."""
     if not 0 <= audit_fraction < 1:
         raise ValueError("audit_fraction must be in [0, 1)")
     t0 = time.time()
     calls0 = getattr(backend, "calls", 0)
     world = make_world(task, people, seed)
     questions = list(world.initial_questions())
+    initial = set(questions)
     audit_qs: list = []
     if audit_fraction > 0:
         rng = random.Random(seed + 4242)
@@ -106,8 +120,24 @@ def run_regime(
         audit.evaluate(agent, 0)
     if guard not in (False, True, "strict"):
         raise ValueError("guard must be False, True or 'strict'")
-    gate = (ConsolidationGuard(monitor, block_on=("ALARM", "WATCH") if guard == "strict" else ("ALARM",))
-            if guard else None)
+    if guard_learning and not guard:
+        raise ValueError("guard_learning needs guard=True or 'strict'")
+
+    def fresh_split(gate_half: bool) -> list:
+        qs = [q for q in world.all_questions() if q not in initial]
+        return [q for q in qs if (hashlib.sha256(q.question.encode()).digest()[0] % 2 == 1) == gate_half]
+
+    def accuracy_on(a: NoteAgent, qs: list) -> float:
+        if not qs:
+            return 1.0
+        return float(sum(answer_score(p, a.respond(p).output) for p in world.probe_suite(qs)) / len(qs))
+
+    gate = None
+    if guard:
+        gate = ConsolidationGuard(
+            monitor, block_on=("ALARM", "WATCH") if guard == "strict" else ("ALARM",),
+            commit_always=("observe",) if guard_learning else (),
+            retention=(lambda a: accuracy_on(a, fresh_split(True))) if guard_learning else None)
     checkpoints = [agent.clone()]
     monitor.evaluate(agent, 0)
     logs = []
@@ -128,6 +158,9 @@ def run_regime(
         if audit is not None:
             audit.evaluate(agent, c)
 
+    fresh = fresh_split(False) if measure_fresh else []
+    fresh_acc = accuracy_on(agent, fresh) if fresh else None
+
     hist = monitor.history
     first = monitor.first_alarm()
     res = RegimeResult(
@@ -145,6 +178,8 @@ def run_regime(
         guarded=bool(guard),
         guard=gate.summary() if gate is not None else None,
         audit_accuracy=[h.metrics["accuracy"] for h in audit.history] if audit is not None else None,
+        fresh_accuracy=fresh_acc,
+        fresh_probes=len(fresh),
     )
     if first is not None:
         b = bisect_checkpoints(

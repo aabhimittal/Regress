@@ -5,6 +5,7 @@ Each job (model, task, seed) runs these regimes on identical worlds:
     faithful          store facts verbatim (control)
     full              self-train + compress all old notes every cycle (abrupt damage)
     full+guard        same, but every stage is tested before it is committed (strict guard)
+    full+guard+learn  guard that always commits observations and also protects recent facts
     gradual           compress only the oldest 25 % per cycle (gradual damage)
     gradual+guard     gradual, guarded (only on jobs marked "extended")
 
@@ -12,7 +13,7 @@ Each job (model, task, seed) runs these regimes on identical worlds:
 All model calls are cached under each job directory, so an interrupted run resumes and a
 finished run can be replayed with ``regress experiment --backend replay``.
 
-    python experiments/run_matrix.py --models-dir ~/models --queue A
+    python experiments/run_matrix.py --models-dir ~/models --queue all --threads 4
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ QUEUES = {
     "A": [("qwen2.5-0.5b", "facts", 0, True), ("qwen2.5-0.5b", "facts", 1, False), ("qwen2.5-0.5b", "facts", 2, False)],
     "B": [("llama3.2-1b", "facts", 0, False), ("qwen2.5-0.5b", "multihop", 0, False), ("qwen2.5-1.5b", "facts", 0, False)],
 }
+QUEUES["all"] = QUEUES["A"] + QUEUES["B"]  # one process at a time: parallel llama.cpp runs oversubscribe the CPU
 
 
 def regimes(task: str, extended: bool) -> list:
@@ -43,6 +45,8 @@ def regimes(task: str, extended: bool) -> list:
         ("faithful", "faithful", {"agent_kwargs": hops}),
         ("full", "recursive_summary", {"agent_kwargs": hops}),
         ("full+guard", "recursive_summary", {"guard": "strict", "agent_kwargs": hops | {"compress_chunks": 2}}),
+        ("full+guard+learn", "recursive_summary",
+         {"guard": "strict", "guard_learning": True, "agent_kwargs": hops | {"compress_chunks": 2}}),
         ("gradual", "recursive_summary", {"agent_kwargs": hops | {"compress_fraction": 0.25}}),
     ]
     if extended:
@@ -57,8 +61,8 @@ def main() -> int:
     ap.add_argument("--queue", choices=sorted(QUEUES), required=True)
     ap.add_argument("--out", default="experiments/results/matrix")
     ap.add_argument("--threads", type=int, default=2)
-    ap.add_argument("--cycles", type=int, default=5)
-    ap.add_argument("--people", type=int, default=12)
+    ap.add_argument("--cycles", type=int, default=6)
+    ap.add_argument("--people", type=int, default=16)
     args = ap.parse_args()
     for model, task, seed, extended in QUEUES[args.queue]:
         out = Path(args.out) / f"{model}-{task}-s{seed}"

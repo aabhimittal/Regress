@@ -36,6 +36,15 @@ __all__ = ["StageDecision", "ConsolidationGuard"]
 Stage = tuple[str, Callable[[Any], Any]]
 
 
+_SEVERITY = {"OK": 0, "WATCH": 1, "ALARM": 2}
+
+
+def _no_worse(candidate: CycleReport, current: CycleReport) -> bool:
+    a, b = candidate.metrics.get("accuracy", float("nan")), current.metrics.get("accuracy", float("nan"))
+    return (_SEVERITY.get(candidate.status, 3) <= _SEVERITY.get(current.status, 3)
+            and not (a < b - 1e-9))
+
+
 @dataclass
 class StageDecision:
     cycle: int
@@ -54,16 +63,39 @@ class ConsolidationGuard:
     ``block_on``: statuses that reject a candidate (default: ALARM). Add ``"WATCH"`` for a
     stricter gate that also rejects any signal. ``clone``: how to copy an agent; defaults to
     ``agent.clone()`` when it exists, else ``copy.deepcopy``.
+
+    A frozen suite only protects what the agent knew at cycle 0, which makes a guard lean
+    towards *not learning*: new observations crowd old ones and get rejected, while a
+    compression that destroys recent knowledge passes because no probe asks about it. Two
+    options address that:
+
+    ``commit_always``: stage names (or name prefixes) that are committed without gating, for
+    stages that bring in data rather than rewrite it (e.g. ``("observe",)``). They are still
+    evaluated and logged, with status ``FORCED``.
+
+    Once a forced stage has pushed the committed agent past ``block_on``, later stages are
+    judged against the committed agent (no worse status, no lower accuracy) rather than the
+    baseline; otherwise nothing could be consolidated again. The recorded cycle report
+    still shows the regression the forced data caused.
+
+    ``retention``: a function scoring an agent on knowledge acquired *since* the baseline
+    (e.g. accuracy on questions about recent observations). A candidate is also rejected if
+    its retention falls more than ``retention_tolerance`` below the current agent's.
     """
 
     monitor: RegressionMonitor
     block_on: Sequence[str] = (ALARM,)
     clone: Callable[[Any], Any] | None = None
+    commit_always: Sequence[str] = ()
+    retention: Callable[[Any], float] | None = None
+    retention_tolerance: float = 0.05
     decisions: list[StageDecision] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.block_on:
             raise ValueError("block_on must name at least one status")
+        if not 0 <= self.retention_tolerance < 1:
+            raise ValueError("retention_tolerance must be in [0, 1)")
 
     def _copy(self, agent: Any) -> Any:
         if self.clone is not None:
@@ -77,20 +109,38 @@ class ConsolidationGuard:
         if not self.monitor.history:
             raise ValueError("record a baseline (cycle 0) on the monitor before guarding cycles")
         current = agent
+        current_rep: CycleReport | None = None
         for name, apply in stages:
             candidate = self._copy(current)
+            forced = any(name == p or name.startswith(p) for p in self.commit_always)
             try:
                 apply(candidate)
                 rep = self.monitor.evaluate(candidate, cycle, record=False)
                 accepted = rep.status not in self.block_on
                 status, reason = rep.status, rep.reason
                 acc, calls = rep.metrics.get("accuracy", float("nan")), rep.metrics.get("probe_calls", 0.0)
-            except Exception as exc:  # a stage that crashes is rejected, never committed
+                if not accepted and not forced and self.commit_always:
+                    # A forced stage may already have pushed the committed agent over the line;
+                    # then every candidate fails against the baseline and nothing could ever be
+                    # consolidated again. Judge it against the committed agent instead.
+                    if current_rep is None:
+                        current_rep = self.monitor.evaluate(current, cycle, record=False)
+                    if current_rep.status in self.block_on and _no_worse(rep, current_rep):
+                        accepted = True
+                        reason = f"no worse than the committed agent ({current_rep.status}); {reason}"
+                if accepted and self.retention is not None and not forced:
+                    before, after = self.retention(current), self.retention(candidate)
+                    if after < before - self.retention_tolerance:
+                        accepted, status = False, "RETENTION"
+                        reason = f"recent-knowledge retention {before:.2f} -> {after:.2f}"
+                if forced:
+                    accepted, status = True, "FORCED"
+            except Exception as exc:  # a stage that crashes is rejected, never committed (even if forced)
                 accepted, status, reason = False, "ERROR", f"{type(exc).__name__}: {exc}"
                 acc, calls = float("nan"), 0.0
             self.decisions.append(StageDecision(cycle, name, accepted, status, reason, acc, calls))
             if accepted:
-                current = candidate
+                current, current_rep = candidate, None
         report = self.monitor.evaluate(current, cycle)  # with a cache, this re-test is free
         return current, report
 

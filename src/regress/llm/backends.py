@@ -71,17 +71,34 @@ class LlamaCppBackend:
             raise ImportError("LlamaCppBackend needs `pip install llama-cpp-python`") from exc
         self.model_path = model_path
         self.name = f"llamacpp:{Path(model_path).name}"
-        self._llm = Llama(model_path=model_path, n_ctx=n_ctx, n_threads=n_threads, logits_all=True,
-                          verbose=False, seed=seed)
+        self._fmt = None
+        llm = Llama(model_path=model_path, n_ctx=n_ctx, n_threads=n_threads, n_threads_batch=n_threads, logits_all=False,
+                    verbose=False, seed=seed)
+        template = llm.metadata.get("tokenizer.chat_template")
+        if template:
+            from llama_cpp import llama_chat_format
+
+            def tok_text(t: int) -> str:
+                return llm._model.token_get_text(t) if t != -1 else ""
+
+            self._fmt = llama_chat_format.Jinja2ChatFormatter(
+                template=template, eos_token=tok_text(llm.token_eos()), bos_token=tok_text(llm.token_bos()),
+                stop_token_ids=[llm.token_eos()])
+        else:  # no chat template: fall back to llama-cpp's chat path, which needs every logit
+            llm = Llama(model_path=model_path, n_ctx=n_ctx, n_threads=n_threads, n_threads_batch=n_threads, logits_all=True,
+                        verbose=False, seed=seed)
+        self._llm = llm
         self._lock = threading.Lock()
         self.calls = 0
 
     def complete(self, system: str, user: str, max_tokens: int) -> Completion:
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         with self._lock:
             self.calls += 1
+            if self._fmt is not None:
+                return self._greedy(messages, max_tokens)
             r = self._llm.create_chat_completion(
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                max_tokens=max_tokens, temperature=0.0, logprobs=True, top_logprobs=1,
+                messages=messages, max_tokens=max_tokens, temperature=0.0, logprobs=True, top_logprobs=1,
             )
         choice = r["choices"][0]
         text = (choice["message"].get("content") or "").strip()
@@ -91,6 +108,41 @@ class LlamaCppBackend:
         if vals:
             conf = float(math.exp(sum(vals) / len(vals)))
         return Completion(text, conf)
+
+    def _greedy(self, messages: list[dict], max_tokens: int) -> Completion:
+        """Greedy decoding by hand. Same tokens and confidence as ``create_chat_completion``
+        with ``logprobs``, but only the last position's logits are computed (llama-cpp's
+        logprobs path log-softmaxes every *prompt* position over the whole vocabulary, which
+        dominated run time), and the KV cache is reused across prompts with a shared prefix."""
+        import numpy as np
+
+        llm, res = self._llm, self._fmt(messages=messages)
+        toks = llm.tokenize(res.prompt.encode("utf-8"), add_bos=not res.added_special, special=True)
+        n, lim = 0, min(llm.n_tokens, len(toks) - 1)
+        while n < lim and llm.input_ids[n] == toks[n]:
+            n += 1
+        llm.n_tokens = n
+        llm.eval(toks[n:])
+        n_vocab = llm.n_vocab()
+        is_eog = getattr(llm._model, "token_is_eog", None) or (lambda t: t == llm.token_eos())
+        out: list[int] = []
+        lps: list[float] = []
+        for _ in range(max_tokens):
+            logits = np.ctypeslib.as_array(llm._ctx.get_logits(), shape=(n_vocab,)).astype(np.float64)
+            k = int(logits.argmax())
+            if is_eog(k):
+                break
+            top = logits[k]
+            lps.append(float(-math.log(np.exp(logits - top).sum())))
+            out.append(k)
+            llm.eval([k])
+        text = llm.detokenize(out, special=False).decode("utf-8", errors="ignore")
+        stops = res.stop if isinstance(res.stop, list) else ([res.stop] if res.stop else [])
+        for s in stops:
+            if s and s in text:
+                text = text[: text.index(s)]
+        conf = float(math.exp(sum(lps) / len(lps))) if lps else None
+        return Completion(text.strip(), conf)
 
 
 class AnthropicBackend:

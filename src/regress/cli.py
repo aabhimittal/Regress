@@ -126,8 +126,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     e.add_argument("--compress-fraction", type=float, default=1.0,
                    help="share of old notes the recursive regime compresses per cycle (< 1 = gradual)")
     e.add_argument("--task", choices=["facts", "multihop"], default="facts")
-    e.add_argument("--guard", choices=["none", "alarm", "strict"], default="none",
-                   help="test each learning stage on a copy before committing it (strict also blocks WATCH)")
+    e.add_argument("--guard", choices=["none", "alarm", "strict", "learn"], default="none",
+                   help="test each learning stage on a copy before committing it (strict also blocks WATCH; "
+                        "learn = strict, but always commit observations and also protect recently learned facts)")
     e.add_argument("--audit-fraction", type=float, default=0.0,
                    help="share of questions held back in an audit suite that only reports, never decides")
     args = p.parse_args(argv)
@@ -251,9 +252,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             kwargs["audit_fraction"] = args.audit_fraction
         regimes = ["faithful", "recursive_summary"]
         if args.guard != "none":
-            guard = "strict" if args.guard == "strict" else True
+            guard = "strict" if args.guard in ("strict", "learn") else True
             regimes.append(("recursive_summary+guard", "recursive_summary",
-                            {"guard": guard, "agent_kwargs": agent_kwargs | {"compress_chunks": 2}}))
+                            {"guard": guard, "guard_learning": args.guard == "learn",
+                             "agent_kwargs": agent_kwargs | {"compress_chunks": 2}}))
         if args.backend == "replay" and recorded.get("regime_specs"):
             regimes = [s["regime"] if not s["overrides"] and s["label"] == s["regime"]
                        else (s["label"], s["regime"], s["overrides"]) for s in recorded["regime_specs"]]
@@ -261,6 +263,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             for k in ("task", "audit_fraction", "ablate", "agent_kwargs"):
                 if k in st:
                     kwargs[k] = st[k]
+        if args.backend == "replay" and not any("fresh_accuracy" in r for r in recorded["results"].values()):
+            kwargs["measure_fresh"] = False  # recorded before new-fact accuracy existed
         summary = run_experiment(backend, regimes=regimes, **kwargs)
         for regime, r in summary["results"].items():
             marks = "".join({"OK": "·", "WATCH": "~", "ALARM": "▲"}[x] for x in r["statuses"])
@@ -271,6 +275,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 audit = r.get("audit_accuracy")
                 print(f"{'':<24} guard: rejected {g['rejected']}/{g['decisions']} stages"
                       + (f"; audit accuracy {audit[0]:.2f} → {audit[-1]:.2f}" if audit else ""))
+            if r.get("fresh_accuracy") is not None:
+                print(f"{'':<24} facts learned during the run, answered at the end: {r['fresh_accuracy']:.2f}")
             if r.get("ablation"):
                 a = r["ablation"]
                 print(f"{'':<24} ablation: {a['verdict']} (recovered {a['recovered']}/{a['regressed']}, "

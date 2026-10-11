@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>REGRESS Report</title>
+<meta name="description" content="REGRESS: regression testing for self-evolving agents. Watch memory collapse, alarms, bisection and onset estimates cycle by cycle.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: instrument bench. Controls + status tape on top, memory map beside a stack of
+   small-multiple gauges, then the per-cycle readout and culprits. Everything follows one cursor. */
+:root {
+  --bg: #F3F5F8; --surface: #FFFFFF; --ink: #121722; --muted: #586174; --line: #DCE1E9; --grid: #EBEEF3;
+  --accent: #3445C2; --accent-soft: #E6E9FB; --on-accent: #FFFFFF;
+  --ok: #1E8657; --watch: #A86C12; --alarm: #C7303B; --ok-soft: #E2F3EA; --watch-soft: #FBF0DD; --alarm-soft: #FBE4E6;
+  --c0: #3445C2; --c1: #D2691E; --c2: #1E8657; --c3: #B0307A; --c4: #2A8FB8; --c5: #8A6D12; --c6: #6B4FC4; --c7: #C7303B;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0E1117; --surface: #161A22; --ink: #E5E8EF; --muted: #96A0B3; --line: #2A303C; --grid: #20252F;
+  --accent: #8E9CFF; --accent-soft: #232A4D; --on-accent: #0E1117;
+  --ok: #4CC28A; --watch: #E2A94C; --alarm: #F2656E; --ok-soft: #15281F; --watch-soft: #2C2312; --alarm-soft: #311A1D;
+  --c0: #8E9CFF; --c1: #F0954E; --c2: #4CC28A; --c3: #E86FB4; --c4: #5CC3EA; --c5: #D8BB54; --c6: #B49CFF; --c7: #F2656E;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0E1117; --surface: #161A22; --ink: #E5E8EF; --muted: #96A0B3; --line: #2A303C; --grid: #20252F;
+  --accent: #8E9CFF; --accent-soft: #232A4D; --on-accent: #0E1117;
+  --ok: #4CC28A; --watch: #E2A94C; --alarm: #F2656E; --ok-soft: #15281F; --watch-soft: #2C2312; --alarm-soft: #311A1D;
+  --c0: #8E9CFF; --c1: #F0954E; --c2: #4CC28A; --c3: #E86FB4; --c4: #5CC3EA; --c5: #D8BB54; --c6: #B49CFF; --c7: #F2656E;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: clamp(16px, 3vw, 32px); padding-block: 28px 56px; display: grid; gap: 22px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(28px, 4vw, 40px); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: 19px; font-weight: 700; }
+h3 { font-size: 12px; font-weight: 600; font-family: var(--body); color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+p { margin: 0; }
+.mono, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+a { color: var(--accent); }
+
+header.top { display: grid; gap: 8px; }
+header.top .lede { max-width: 72ch; color: var(--muted); }
+header.top .eyebrow { font-family: var(--mono); font-size: 12px; color: var(--accent); letter-spacing: 0.04em; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+.row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: end; }
+.ctl { display: grid; gap: 6px; }
+.ctl > span { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); flex-wrap: wrap; }
+.seg button { font: 500 14px var(--body); color: var(--ink); background: transparent; border: 0; padding: 7px 13px; cursor: pointer; border-right: 1px solid var(--line); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.seg button:focus-visible, .btn:focus-visible, .tape button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn { font: 500 14px var(--body); color: var(--accent); background: var(--accent-soft); border: 1px solid transparent; border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+.scen-desc { flex: 1 1 280px; min-width: 0; color: var(--muted); font-size: 14px; }
+.calnote { font-size: 13px; color: var(--muted); padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); }
+
+.tape-wrap { display: grid; gap: 8px; }
+.tape, .marks { display: grid; gap: 3px; }
+.tape button { height: 38px; border: 0; border-radius: 4px; cursor: pointer; font: 500 11px var(--mono); color: var(--ink); position: relative; padding: 0; min-width: 0; overflow: hidden; }
+.tape button.OK { background: var(--ok-soft); } .tape button.WATCH { background: var(--watch-soft); } .tape button.ALARM { background: var(--alarm-soft); }
+.tape button::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4px; }
+.tape button.OK::after { background: var(--ok); } .tape button.WATCH::after { background: var(--watch); } .tape button.ALARM::after { background: var(--alarm); }
+.tape button.cur { outline: 2px solid var(--ink); outline-offset: 1px; }
+.tape-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); }
+.tape-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.marks { font: 500 10px var(--mono); color: var(--muted); text-align: center; min-height: 14px; }
+.marks span { white-space: nowrap; overflow: visible; }
+.marks .on { color: var(--accent); } .marks .al { color: var(--alarm); }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+.verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); padding: 0; overflow: hidden; }
+.verdict > div { padding: 14px 16px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; gap: 4px; align-content: start; min-width: 0; }
+.verdict .big { font-family: var(--display); font-size: 26px; font-weight: 700; line-height: 1.1; }
+.verdict .sub { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.pill { display: inline-block; font: 600 11px var(--mono); padding: 2px 8px; border-radius: 99px; letter-spacing: 0.04em; vertical-align: 3px; }
+.pill.OK { background: var(--ok-soft); color: var(--ok); } .pill.WATCH { background: var(--watch-soft); color: var(--watch); } .pill.ALARM { background: var(--alarm-soft); color: var(--alarm); }
+
+.bench { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; align-items: start; }
+.bench.nomap { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 900px) { .bench { grid-template-columns: minmax(0, 1fr); } }
+.mapbox { display: grid; gap: 10px; }
+.mapbox canvas { width: 100%; aspect-ratio: 1 / 1; max-width: 100%; display: block; border-radius: 6px; background: var(--bg); }
+.mapstats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.stat { display: grid; gap: 1px; }
+.stat b { font: 500 18px var(--mono); font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12px; color: var(--muted); }
+.gauges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.bench.nomap .gauges { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+@media (max-width: 560px) { .gauges { grid-template-columns: minmax(0, 1fr); } }
+.gauge { display: grid; gap: 4px; min-width: 0; }
+.gauge .gh { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.gauge .val { font: 500 14px var(--mono); }
+.gauge svg { width: 100%; height: auto; display: block; }
+.gauge .note { font-size: 12px; color: var(--muted); }
+
+.readout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 900px) { .readout { grid-template-columns: minmax(0, 1fr); } }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-weight: 500; color: var(--muted); font-size: 12px; }
+td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.bad { color: var(--alarm); } .good { color: var(--ok); }
+.sig { display: grid; gap: 8px; }
+.sig .item { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 8px 10px; border-radius: 6px; background: var(--bg); }
+.sig .cat { font: 500 11px var(--mono); color: var(--muted); padding-top: 2px; min-width: 76px; }
+.sig .item.weak { opacity: 0.7; }
+.sig .detail { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.reason { padding: 10px 12px; border-radius: 6px; font-size: 14px; }
+.reason.OK { background: var(--ok-soft); } .reason.WATCH { background: var(--watch-soft); } .reason.ALARM { background: var(--alarm-soft); }
+.bar { height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--alarm); }
+
+.explain { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.explain p { color: var(--muted); font-size: 14px; max-width: 65ch; }
+.explain h2 { margin-bottom: 6px; }
+pre { margin: 0; overflow-x: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font: 13px/1.55 var(--mono); color: var(--ink); }
+footer { font-size: 13px; color: var(--muted); }
+ul.recs { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; display: grid; gap: 4px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 500 12px var(--mono); padding: 3px 8px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow" id="eyebrow"></div>
+    <h1 id="heading"></h1>
+    <p class="lede" id="lede"></p>
+  </header>
+
+  <section class="panel" style="display:grid;gap:12px" aria-label="Controls">
+    <div class="controls">
+      <div class="ctl" id="scenCtl"><span>Scenario</span><div class="seg" id="scen" role="group" aria-label="Scenario"></div></div>
+      <div class="ctl" id="seedCtl"><span>Seed</span><div class="seg" id="seed" role="group" aria-label="Seed"></div></div>
+      <div class="ctl" id="modeCtl"><span>Thresholds</span><div class="seg" id="mode" role="group" aria-label="Thresholds"></div></div>
+      <div class="ctl"><span>&nbsp;</span><button class="btn" id="play" type="button">▶ Play cycles</button></div>
+      <p class="scen-desc" id="scenDesc"></p>
+    </div>
+    <p class="calnote" id="calNote" hidden></p>
+  </section>
+
+  <section class="tape-wrap" aria-label="Status per cycle">
+    <div class="tape" id="tape"></div>
+    <div class="marks" id="marks"></div>
+    <label class="muted" for="cyc" style="font-size:12px">Cycle cursor (← → keys also work)</label>
+    <input type="range" id="cyc" min="0" max="20" value="0">
+    <div class="tape-legend">
+      <span><i style="background:var(--ok)"></i>OK: no signals</span>
+      <span><i style="background:var(--watch)"></i>WATCH: signals, no alarming combination</span>
+      <span><i style="background:var(--alarm)"></i>ALARM: collapse signature or ≥ 2 categories</span>
+      <span id="onsetLegend"><b style="color:var(--accent)">▲ onset</b> = when the bad consolidation actually started</span>
+    </div>
+  </section>
+
+  <section class="panel verdict" id="verdict" aria-label="Verdict"></section>
+
+  <section class="bench" id="bench">
+    <div class="panel mapbox" id="mapPanel">
+      <div class="row"><h2>Memory map</h2><span class="muted mono" style="font-size:12px" id="mapCycle"></span></div>
+      <p class="muted" style="font-size:13px">Each dot is one memory, projected onto the two main directions of the cycle-0
+        memory. Colour is the label the memory carries; size is its importance weight. Healthy runs keep eight separate
+        clusters. In a collapse they drift toward a few heavy hubs and pick up the wrong labels.</p>
+      <canvas id="map" width="720" height="720" aria-label="Scatter plot of memory embeddings"></canvas>
+      <div class="mapstats">
+        <div class="stat"><b id="msN"></b><span>memories</span></div>
+        <div class="stat"><b id="msR"></b><span>effective rank</span></div>
+        <div class="stat"><b id="msD"></b><span>near-duplicates</span></div>
+      </div>
+    </div>
+    <div class="panel" style="display:grid;gap:14px">
+      <div class="row"><h2>Gauges</h2><span class="muted" style="font-size:12px">dashed = baseline · shaded = past tolerance</span></div>
+      <div class="gauges" id="gauges"></div>
+    </div>
+  </section>
+
+  <section class="readout">
+    <div class="panel" style="display:grid;gap:12px">
+      <h2 id="roTitle">Cycle readout</h2>
+      <div class="reason" id="reason"></div>
+      <div class="tbl"><table id="mtable"></table></div>
+    </div>
+    <div style="display:grid;gap:16px;align-content:start">
+      <div class="panel" style="display:grid;gap:12px">
+        <h2>Signals this cycle</h2>
+        <div class="sig" id="signals"></div>
+      </div>
+      <div class="panel" style="display:grid;gap:12px">
+        <div class="row"><h2>Suspect memories</h2><span class="muted" style="font-size:12px" id="blameSub"></span></div>
+        <p class="muted" style="font-size:13px">Memories retrieved by the probes that regressed against the baseline. Lift above 1 means
+          regressed probes use the memory more often than probes in general. These are leads to check, not proven causes.</p>
+        <div class="tbl"><table id="btable"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" style="display:grid;gap:10px" aria-label="Probe suite health">
+    <div class="row"><h2>Probe suite health</h2><span class="muted" style="font-size:12px">over this run</span></div>
+    <div class="chips" id="healthChips"></div>
+    <ul class="recs" id="healthRecs"></ul>
+  </section>
+
+  <section class="panel explain" id="explain">
+    <div>
+      <h2>Why combine metrics</h2>
+      <p>Any single metric can move for innocent reasons. Learning changes outputs, and memory growth shifts diversity.
+        Collapse has a shape: memories bunch together while the agent grows <em>more</em> sure of itself. REGRESS alarms
+        on that shape, or on damage in two independent places, so it can fire while accuracy still looks fine.</p>
+    </div>
+    <div>
+      <h2>Why compare with cycle 0</h2>
+      <p>A sourdough starter that sours a little each day never tastes different from yesterday. It only tastes different
+        from day one. Every gauge measures distance from the baseline, so slow decay accumulates instead of hiding inside
+        day-to-day noise.</p>
+    </div>
+    <div>
+      <h2>Default vs calibrated</h2>
+      <p>The default tolerances are generic guesses. Calibrated tolerances are fitted to healthy runs of this agent (seeds
+        not shown here), so they know how much this agent normally wobbles. Switch the thresholds control and compare
+        how early each one fires.</p>
+    </div>
+    <div>
+      <h2>Wire it into your loop</h2>
+<pre>monitor = RegressionMonitor(ProbeSuite(probes, holdout_fraction=0.25))
+for cycle in range(n):
+    report = monitor.evaluate(agent, cycle)
+    if report.alarmed:
+        print(report.reason)
+    agent.consolidate()
+monitor.save("history.json")   # then: regress report history.json --html report.html</pre>
+    </div>
+  </section>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+const DATA = {"thresholds":{"default":{"accuracy_drop":0.05,"output_shift":0.15,"churn":0.35,"diversity_drop":0.2,"spread_drop":0.2,"near_duplicates":0.15,"entropy_drop":0.15,"retrieval_hub":0.15,"confidence_rise":0.05,"overconfidence":0.1,"probe_overfit":0.05,"error_rate":0.05,"embedding_changed":0.2}},"meta":{"mode":"report","title":"REGRESS Report","eyebrow":"REGRESS \u00b7 history report","heading":"Real agent (llamacpp:llama-3.2-1b-instruct-q4_k_m.gguf), facts task, regime: full","lede":"7 recorded cycles, each compared with cycle 0. Scrub the cycles to see what moved, which signals fired, and which memories the regressed probes relied on.","footer":"Generated by REGRESS from a saved monitor history."},"seeds":["0"],"modes":["default"],"calibration":null,"scenarios":{"history":{"description":"","truth":false,"onset":null,"runs":{"0":{"map":null,"modes":{"default":{"cycles":[{"cycle":0,"status":"OK","reason":"baseline recorded","signature":false,"m":{"accuracy":0.9722,"public_accuracy":0.9643,"holdout_accuracy":1.0,"effective_rank":15.9608,"mean_cosine_distance":0.7579,"near_duplicate_fraction":0.0,"retrieval_entropy":0.9588,"retrieval_top1_share":0.0694,"mean_confidence":0.8167,"overconfidence":-0.1555,"change_rate":0.0,"output_jsd":0.0,"probe_overfit_gap":0.0,"memory_size":48.0,"regressions":0.0,"fixes":0.0,"error_rate":0.0},"signals":[]},{"cycle":1,"status":"ALARM","reason":"3 independent categories degraded: confidence, drift, retrieval","signature":false,"m":{"accuracy":0.1389,"public_accuracy":0.1429,"holdout_accuracy":0.125,"effective_rank":18.7634,"mean_cosine_distance":0.8319,"near_duplicate_fraction":0.0,"retrieval_entropy":0.7629,"retrieval_top1_share":0.1042,"mean_confidence":0.7176,"overconfidence":0.5787,"change_rate":0.8611,"output_jsd":0.6483,"probe_overfit_gap":-0.2308,"memory_size":34.0,"regressions":30.0,"fixes":0.0,"error_rate":0.0},"signals":[{"name":"accuracy_drop","cat":"drift","metric":"accuracy","base":0.9722,"value":0.1389,"excess":0.8333,"tol":0.1235,"weak":false},{"name":"output_shift","cat":"drift","metric":"output_jsd","base":0.0,"value":0.6483,"excess":0.6483,"tol":0.15,"weak":false},{"name":"churn","cat":"drift","metric":"change_rate","base":0.0,"value":0.8611,"excess":0.8611,"tol":0.35,"weak":true},{"name":"entropy_drop","cat":"retrieval","metric":"retrieval_entropy","base":0.9588,"value":0.7629,"excess":0.1959,"tol":0.15,"weak":false},{"name":"overconfidence","cat":"confidence","metric":"overconfidence","base":-0.1555,"value":0.5787,"excess":0.7342,"tol":0.1,"weak":false}]},{"cycle":2,"status":"ALARM","reason":"3 independent categories degraded: confidence, drift, retrieval","signature":false,"m":{"accuracy":0.0278,"public_accuracy":0.0357,"holdout_accuracy":0.0,"effective_rank":16.7494,"mean_cosine_distance":0.8318,"near_duplicate_fraction":0.0,"retrieval_entropy":0.79,"retrieval_top1_share":0.1181,"mean_confidence":0.6766,"overconfidence":0.6489,"change_rate":0.9444,"output_jsd":0.8837,"probe_overfit_gap":-0.0257,"memory_size":30.0,"regressions":34.0,"fixes":0.0,"error_rate":0.0},"signals":[{"name":"accuracy_drop","cat":"drift","metric":"accuracy","base":0.9722,"value":0.0278,"excess":0.9444,"tol":0.0759,"weak":false},{"name":"output_shift","cat":"drift","metric":"output_jsd","base":0.0,"value":0.8837,"excess":0.8837,"tol":0.15,"weak":false},{"name":"churn","cat":"drift","metric":"change_rate","base":0.0,"value":0.9444,"excess":0.9444,"tol":0.35,"weak":true},{"name":"entropy_drop","cat":"retrieval","metric":"retrieval_entropy","base":0.9588,"value":0.79,"excess":0.1688,"tol":0.15,"weak":false},{"name":"overconfidence","cat":"confidence","metric":"overconfidence","base":-0.1555,"value":0.6489,"excess":0.8044,"tol":0.1,"weak":false}]},{"cycle":3,"status":"ALARM","reason":"3 independent categories degraded: confidence, drift, retrieval","signature":false,"m":{"accuracy":0.0,"public_accuracy":0.0,"holdout_accuracy":0.0,"effective_rank":16.7026,"mean_cosine_distance":0.8253,"near_duplicate_fraction":0.0,"retrieval_entropy":0.8065,"retrieval_top1_share":0.1042,"mean_confidence":0.6418,"overconfidence":0.6418,"change_rate":0.9722,"output_jsd":0.8108,"probe_overfit_gap":-0.0343,"memory_size":28.0,"regressions":35.0,"fixes":0.0,"error_rate":0.0},"signals":[{"name":"accuracy_drop","cat":"drift","metric":"accuracy","base":0.9722,"value":0.0,"excess":0.9722,"tol":0.0544,"weak":false},{"name":"output_shift","cat":"drift","metric":"output_jsd","base":0.0,"value":0.8108,"excess":0.8108,"tol":0.15,"weak":false},{"name":"churn","cat":"drift","metric":"change_rate","base":0.0,"value":0.9722,"excess":0.9722,"tol":0.35,"weak":true},{"name":"entropy_drop","cat":"retrieval","metric":"retrieval_entropy","base":0.9588,"value":0.8065,"excess":0.1522,"tol":0.15,"weak":false},{"name":"overconfidence","cat":"confidence","metric":"overconfidence","base":-0.1555,"value":0.6418,"excess":0.7973,"tol":0.1,"weak":false}]},{"cycle":4,"status":"ALARM","reason":"3 independent categories degraded: confidence, drift, retrieval","signature":false,"m":{"accuracy":0.0556,"public_accuracy":0.0357,"holdout_accuracy":0.125,"effective_rank":16.2615,"mean_cosine_distance":0.8152,"near_duplicate_fraction":0.0,"retrieval_entropy":0.7958,"retrieval_top1_share":0.1042,"mean_confidence":0.6165,"overconfidence":0.561,"change_rate":0.9167,"output_jsd":0.7198,"probe_overfit_gap":-0.3171,"memory_size":27.0,"regressions":33.0,"fixes":0.0,"error_rate":0.0},"signals":[{"name":"accuracy_drop","cat":"drift","metric":"accuracy","base":0.9722,"value":0.0556,"excess":0.9167,"tol":0.0916,"weak":false},{"name":"output_shift","cat":"drift","metric":"output_jsd","base":0.0,"value":0.7198,"excess":0.7198,"tol":0.15,"weak":false},{"name":"churn","cat":"drift","metric":"change_rate","base":0.0,"value":0.9167,"excess":0.9167,"tol":0.35,"weak":true},{"name":"entropy_drop","cat":"retrieval","metric":"retrieval_entropy","base":0.9588,"value":0.7958,"excess":0.163,"tol":0.15,"weak":false},{"name":"overconfidence","cat":"confidence","metric":"overconfidence","base":-0.1555,"value":0.561,"excess":0.7165,"tol":0.1,"weak":false}]},{"cycle":5,"status":"ALARM","reason":"2 independent categories degraded: confidence, drift","signature":false,"m":{"accuracy":0.0,"public_accuracy":0.0,"holdout_accuracy":0.0,"effective_rank":15.8465,"mean_cosine_distance":0.8269,"near_duplicate_fraction":0.0,"retrieval_entropy":0.8298,"retrieval_top1_share":0.1042,"mean_confidence":0.6531,"overconfidence":0.6531,"change_rate":0.9722,"output_jsd":0.9143,"probe_overfit_gap":-0.0343,"memory_size":27.0,"regressions":35.0,"fixes":0.0,"error_rate":0.0},"signals":[{"name":"accuracy_drop","cat":"drift","metric":"accuracy","base":0.9722,"value":0.0,"excess":0.9722,"tol":0.0544,"weak":false},{"name":"output_shift","cat":"drift","metric":"output_jsd","base":0.0,"value":0.9143,"excess":0.9143,"tol":0.15,"weak":false},{"name":"churn","cat":"drift","metric":"change_rate","base":0.0,"value":0.9722,"excess":0.9722,"tol":0.35,"weak":true},{"name":"overconfidence","cat":"confidence","metric":"overconfidence","base":-0.1555,"value":0.6531,"excess":0.8086,"tol":0.1,"weak":false}]},{"cycle":6,"status":"ALARM","reason":"2 independent categories degraded: confidence, drift","signature":false,"m":{"accuracy":0.0278,"public_accuracy":0.0357,"holdout_accuracy":0.0,"effective_rank":15.0616,"mean_cosine_distance":0.8067,"near_duplicate_fraction":0.0,"retrieval_entropy":0.8276,"retrieval_top1_share":0.1042,"mean_confidence":0.6496,"overconfidence":0.6218,"change_rate":0.9444,"output_jsd":0.8205,"probe_overfit_gap":-0.0257,"memory_size":26.0,"regressions":34.0,"fixes":0.0,"error_rate":0.0},"signals":[{"name":"accuracy_drop","cat":"drift","metric":"accuracy","base":0.9722,"value":0.0278,"excess":0.9444,"tol":0.0759,"weak":false},{"name":"output_shift","cat":"drift","metric":"output_jsd","base":0.0,"value":0.8205,"excess":0.8205,"tol":0.15,"weak":false},{"name":"churn","cat":"drift","metric":"change_rate","base":0.0,"value":0.9444,"excess":0.9444,"tol":0.35,"weak":true},{"name":"overconfidence","cat":"confidence","metric":"overconfidence","base":-0.1555,"value":0.6218,"excess":0.7773,"tol":0.1,"weak":false}]}],"first_alarm":1,"bisect":null,"onset":{"cycle":1,"per":[{"metric":"accuracy","cycle":1,"model":"step"},{"metric":"output_jsd","cycle":1,"model":"step"},{"metric":"retrieval_entropy","cycle":1,"model":"step"},{"metric":"overconfidence","cycle":1,"model":"step"}]},"blame":{"1":{"regressed":30,"suspects":[{"id":"n00066","hits":12,"total":15,"lift":0.96,"sb":0.0,"sn":0.1042,"fs":1},{"id":"n00064","hits":11,"total":12,"lift":1.1,"sb":0.0,"sn":0.0833,"fs":1},{"id":"n00050","hits":10,"total":12,"lift":1.0,"sb":0.0,"sn":0.0833,"fs":1},{"id":"n00061","hits":10,"total":12,"lift":1.0,"sb":0.0,"sn":0.0833,"fs":1},{"id":"n00063","hits":10,"total":12,"lift":1.0,"sb":0.0,"sn":0.0833,"fs":1},{"id":"n00065","hits":10,"total":12,"lift":1.0,"sb":0.0,"sn":0.0833,"fs":1}]},"2":{"regressed":34,"suspects":[{"id":"n00100","hits":17,"total":17,"lift":1.06,"sb":0.0,"sn":0.1181,"fs":2},{"id":"n00099","hits":16,"total":17,"lift":1.0,"sb":0.0,"sn":0.1181,"fs":2},{"id":"n00097","hits":13,"total":14,"lift":0.98,"sb":0.0,"sn":0.0972,"fs":2},{"id":"n00098","hits":13,"total":14,"lift":0.98,"sb":0.0,"sn":0.0972,"fs":2},{"id":"n00095","hits":12,"total":13,"lift":0.98,"sb":0.0,"sn":0.0903,"fs":2},{"id":"n00096","hits":11,"total":12,"lift":0.97,"sb":0.0,"sn":0.0833,"fs":2}]},"3":{"regressed":35,"suspects":[{"id":"n00126","hits":15,"total":15,"lift":1.03,"sb":0.0,"sn":0.1042,"fs":3},{"id":"n00124","hits":13,"total":13,"lift":1.03,"sb":0.0,"sn":0.0903,"fs":3},{"id":"n00125","hits":13,"total":13,"lift":1.03,"sb":0.0,"sn":0.0903,"fs":3},{"id":"n00127","hits":13,"total":14,"lift":0.96,"sb":0.0,"sn":0.0972,"fs":3},{"id":"n00122","hits":12,"total":13,"lift":0.95,"sb":0.0,"sn":0.0903,"fs":3},{"id":"n00128","hits":11,"total":11,"lift":1.03,"sb":0.0,"sn":0.0764,"fs":3}]},"4":{"regressed":33,"suspects":[{"id":"n00153","hits":14,"total":15,"lift":1.02,"sb":0.0,"sn":0.1042,"fs":4},{"id":"n00156","hits":13,"total":14,"lift":1.01,"sb":0.0,"sn":0.0972,"fs":4},{"id":"n00161","hits":12,"total":13,"lift":1.01,"sb":0.0,"sn":0.0903,"fs":4},{"id":"n00140","hits":11,"total":11,"lift":1.09,"sb":0.0,"sn":0.0764,"fs":4},{"id":"n00141","hits":11,"total":11,"lift":1.09,"sb":0.0,"sn":0.0764,"fs":4},{"id":"n00143","hits":11,"total":12,"lift":1.0,"sb":0.0,"sn":0.0833,"fs":4}]},"5":{"regressed":35,"suspects":[{"id":"n00181","hits":15,"total":15,"lift":1.03,"sb":0.0,"sn":0.1042,"fs":5},{"id":"n00178","hits":12,"total":13,"lift":0.95,"sb":0.0,"sn":0.0903,"fs":5},{"id":"n00180","hits":12,"total":13,"lift":0.95,"sb":0.0,"sn":0.0903,"fs":5},{"id":"n00183","hits":12,"total":13,"lift":0.95,"sb":0.0,"sn":0.0903,"fs":5},{"id":"n00179","hits":11,"total":11,"lift":1.03,"sb":0.0,"sn":0.0764,"fs":5},{"id":"n00172","hits":10,"total":10,"lift":1.03,"sb":0.0,"sn":0.0694,"fs":5}]},"6":{"regressed":34,"suspects":[{"id":"n00199","hits":13,"total":13,"lift":1.06,"sb":0.0,"sn":0.0903,"fs":6},{"id":"n00206","hits":13,"total":13,"lift":1.06,"sb":0.0,"sn":0.0903,"fs":6},{"id":"n00207","hits":13,"total":15,"lift":0.92,"sb":0.0,"sn":0.1042,"fs":6},{"id":"n00193","hits":12,"total":12,"lift":1.06,"sb":0.0,"sn":0.0833,"fs":6},{"id":"n00196","hits":11,"total":11,"lift":1.06,"sb":0.0,"sn":0.0764,"fs":6},{"id":"n00205","hits":11,"total":13,"lift":0.9,"sb":0.0,"sn":0.0903,"fs":6}]}},"health":{"counts":{"regressed":32,"mixed":1,"flaky":2,"unsolved":1},"recommendations":["6% of probes flip without a trend. Check the scorer or agent sampling temperature, or raise warm-up so tolerances absorb the noise."]}}}}}}}};
+
+const GAUGES = [
+  { key: "accuracy", label: "Accuracy", fmt: 3, dir: -1, thr: "accuracy_drop", rel: false, extra: "holdout_accuracy",
+    note: "solid = all probes · thin = held-out probes" },
+  { key: "effective_rank", label: "Effective rank of memory", fmt: 1, dir: -1, thr: "diversity_drop", rel: true,
+    note: "how many directions the memory spans" },
+  { key: "mean_cosine_distance", label: "Pairwise spread", fmt: 3, dir: -1, thr: "spread_drop", rel: true,
+    note: "mean cosine distance between memories" },
+  { key: "retrieval_entropy", label: "Retrieval entropy", fmt: 3, dir: -1, thr: "entropy_drop", rel: false,
+    note: "1 = retrieval spread evenly, 0 = one memory answers all" },
+  { key: "mean_confidence", label: "Expressed confidence", fmt: 3, dir: +1, thr: "confidence_rise", rel: false,
+    note: "rising while diversity falls = collapse signature" },
+  { key: "overconfidence", label: "Overconfidence gap", fmt: 3, dir: +1, thr: "overconfidence", rel: false,
+    note: "confidence minus accuracy" },
+];
+const TABLE = [
+  ["accuracy", "Accuracy", 3], ["public_accuracy", "Public probes", 3], ["holdout_accuracy", "Held-out probes", 3],
+  ["effective_rank", "Effective rank", 2], ["mean_cosine_distance", "Pairwise spread", 3],
+  ["near_duplicate_fraction", "Near-duplicates", 3], ["retrieval_entropy", "Retrieval entropy", 3],
+  ["retrieval_top1_share", "Top-1 retrieval share", 3], ["mean_confidence", "Confidence", 3],
+  ["overconfidence", "Overconfidence", 3], ["change_rate", "Outputs changed", 3], ["error_rate", "Probe errors", 3],
+  ["memory_size", "Memory size", 0],
+];
+const HIGHER_BAD = new Set(["near_duplicate_fraction", "retrieval_top1_share", "mean_confidence", "overconfidence", "change_rate", "error_rate"]);
+const LOWER_BAD = new Set(["accuracy", "public_accuracy", "holdout_accuracy", "effective_rank", "mean_cosine_distance", "retrieval_entropy"]);
+
+const scenNames = Object.keys(DATA.scenarios);
+const state = { scen: scenNames.includes("collapse") ? "collapse" : scenNames[0], seed: DATA.seeds[0], mode: DATA.modes[0], idx: 0, playing: null };
+try {
+  const s = JSON.parse(localStorage.getItem("regress-lab") || "{}");
+  if (DATA.scenarios[s.scen]) state.scen = s.scen;
+  if (DATA.modes.includes(s.mode)) state.mode = s.mode;
+} catch (e) {}
+
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (v, d) => v === null || v === undefined || Number.isNaN(v) ? "–" : Number(v).toFixed(d);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const scen = () => DATA.scenarios[state.scen];
+const runObj = () => scen().runs[state.seed];
+const R = () => runObj().modes[state.mode] || runObj().modes[Object.keys(runObj().modes)[0]];
+const N = () => R().cycles.length;
+const idxOf = cycle => R().cycles.findIndex(c => c.cycle === cycle);
+const thr = () => (DATA.thresholds && (DATA.thresholds[state.mode] || DATA.thresholds.default)) || {};
+function save() { try { localStorage.setItem("regress-lab", JSON.stringify({ scen: state.scen, mode: state.mode })); } catch (e) {} }
+
+function seg(el, items, current, onPick, label = x => x) {
+  el.innerHTML = "";
+  for (const it of items) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = label(it);
+    b.setAttribute("aria-pressed", String(it === current));
+    b.onclick = () => { stop(); onPick(it); };
+    el.appendChild(b);
+  }
+}
+
+function buildControls() {
+  seg($("scen"), scenNames, state.scen, n => { state.scen = n; const fa = R().first_alarm; state.idx = fa === null ? N() - 1 : idxOf(fa); save(); render(); });
+  seg($("seed"), DATA.seeds, state.seed, s => { state.seed = s; render(); });
+  seg($("mode"), DATA.modes, state.mode, m => { state.mode = m; save(); render(); });
+  $("scenCtl").hidden = scenNames.length < 2;
+  $("seedCtl").hidden = DATA.seeds.length < 2;
+  $("modeCtl").hidden = DATA.modes.length < 2;
+  const cal = DATA.calibration;
+  const note = $("calNote");
+  if (state.mode === "calibrated" && cal) {
+    const d = DATA.thresholds.default, c = cal.thresholds;
+    const parts = ["accuracy_drop", "diversity_drop", "confidence_rise", "entropy_drop"].map(k => `${k.replace(/_/g, " ")} ${fmt(d[k], 3)} → ${fmt(c[k], 3)}`);
+    note.textContent = `Calibrated on ${cal.seeds.length} healthy runs (seeds ${cal.seeds.join(", ")}, not shown) at the ${(cal.quantile * 100).toFixed(1)}% quantile × ${cal.margin} margin. ${parts.join(" · ")}.`;
+    note.hidden = false;
+  } else note.hidden = true;
+}
+
+function renderTape() {
+  const r = R(), sc = scen(), n = N();
+  const cols = `repeat(${n}, minmax(0, 1fr))`;
+  const tape = $("tape"), marks = $("marks");
+  tape.style.gridTemplateColumns = cols; marks.style.gridTemplateColumns = cols;
+  tape.innerHTML = ""; marks.innerHTML = "";
+  r.cycles.forEach((c, i) => {
+    const b = document.createElement("button"); b.type = "button";
+    b.className = c.status + (i === state.idx ? " cur" : "");
+    b.textContent = n <= 40 ? c.cycle : "";
+    b.title = `cycle ${c.cycle}: ${c.status}, ${c.reason}`;
+    b.setAttribute("aria-label", `cycle ${c.cycle}, ${c.status}`);
+    b.onclick = () => { stop(); state.idx = i; render(); };
+    tape.appendChild(b);
+    const s = document.createElement("span");
+    if (sc.truth && sc.onset === c.cycle) { s.textContent = "▲ onset"; s.className = "on"; }
+    else if (r.first_alarm === c.cycle) { s.textContent = "alarm"; s.className = "al"; }
+    marks.appendChild(s);
+  });
+  const cyc = $("cyc"); cyc.max = n - 1; cyc.value = state.idx;
+  $("onsetLegend").hidden = !sc.truth;
+}
+
+function renderVerdict() {
+  const r = R(), sc = scen(), base = r.cycles[0];
+  const fa = r.first_alarm, first = fa === null ? null : r.cycles[idxOf(fa)];
+  const cells = [];
+  if (first === null) {
+    const w = r.cycles.filter(c => c.status === "WATCH").length;
+    cells.push(`<div><h3>First alarm</h3><div class="big">none</div><div class="sub">${r.cycles.length} cycles, ${w} on watch</div></div>`);
+  } else {
+    cells.push(`<div><h3>First alarm</h3><div class="big">cycle ${fa}</div><div class="sub">${first.signature ? "collapse signature" : "multiple categories"} · accuracy ${fmt(first.m.accuracy, 3)} vs ${fmt(base.m.accuracy, 3)} at cycle ${base.cycle}</div></div>`);
+  }
+  if (sc.truth) cells.push(`<div><h3>Ground truth</h3><div class="big">${sc.onset === null ? "healthy" : "cycle " + sc.onset}</div><div class="sub">${sc.onset === null ? "feedback-driven learning throughout" : "first bad consolidation in the simulator"}</div></div>`);
+  if (r.bisect) cells.push(`<div><h3>Bisect</h3><div class="big">${r.bisect.last_good} → ${r.bisect.first_bad}</div><div class="sub">last good → first alarming checkpoint, ${r.bisect.evals.length} of ${r.cycles.length} checkpoints re-run</div></div>`);
+  else if (DATA.meta.mode === "demo") cells.push(`<div><h3>Bisect</h3><div class="big">–</div><div class="sub">nothing to bisect</div></div>`);
+  if (r.onset && r.onset.cycle !== null) {
+    const per = r.onset.per.filter(o => o.cycle !== null).map(o => `${o.metric.replace(/_/g, " ")} @${o.cycle}`).join(" · ");
+    const lag = fa - r.onset.cycle;
+    cells.push(`<div><h3>Onset estimate</h3><div class="big">cycle ${r.onset.cycle}</div><div class="sub">${lag > 0 ? `${lag} cycle${lag > 1 ? "s" : ""} before the alarm · ` : ""}${esc(per)}</div></div>`);
+  } else cells.push(`<div><h3>Onset estimate</h3><div class="big">–</div><div class="sub">no change point to estimate</div></div>`);
+  $("verdict").innerHTML = cells.join("");
+}
+
+function drawGauge(svg, g, r) {
+  const W = 300, H = 124, L = 38, Rp = 8, T = 8, B = 20, n = r.cycles.length, last = Math.max(1, n - 1);
+  const vals = r.cycles.map(c => c.m[g.key]);
+  const extra = g.extra ? r.cycles.map(c => c.m[g.extra]) : null;
+  const base = vals[0];
+  const t = thr()[g.thr];
+  const tol = base === null || t === undefined || t === null ? null : (g.rel ? base * (1 - t) : base + g.dir * t);
+  const all = vals.concat(extra || [], [base, tol]).filter(v => v !== null && v !== undefined);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (!all.length) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="11" fill="${css("--muted")}">not recorded</text>`; return null; }
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.05 || 0.05; lo -= pad; hi += pad;
+  const x = i => L + (i / last) * (W - L - Rp);
+  const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const ink = css("--ink"), muted = css("--muted"), grid = css("--grid"), accent = css("--accent"), alarm = css("--alarm");
+  const sc = scen();
+  let s = "";
+  if (tol !== null) {
+    const dz = g.dir < 0 ? [y(tol), y(lo)] : [y(hi), y(tol)];
+    s += `<rect x="${L}" y="${Math.min(...dz)}" width="${W - L - Rp}" height="${Math.max(0, Math.abs(dz[1] - dz[0]))}" fill="${alarm}" fill-opacity="0.09"/>`;
+  }
+  [lo + pad, (lo + hi) / 2, hi - pad].forEach(v => {
+    s += `<line x1="${L}" x2="${W - Rp}" y1="${y(v)}" y2="${y(v)}" stroke="${grid}" stroke-width="1"/>`;
+    s += `<text x="${L - 5}" y="${y(v) + 3.5}" text-anchor="end" font-size="9.5" fill="${muted}" font-family="IBM Plex Mono, monospace">${v.toFixed(g.fmt === 1 ? 1 : 2)}</text>`;
+  });
+  const tickIdx = [...new Set([0, Math.round(last / 4), Math.round(last / 2), Math.round(3 * last / 4), last])];
+  tickIdx.forEach(i => s += `<text x="${x(i)}" y="${H - 5}" text-anchor="middle" font-size="9.5" fill="${muted}" font-family="IBM Plex Mono, monospace">${r.cycles[i].cycle}</text>`);
+  if (sc.truth && sc.onset !== null && idxOf(sc.onset) >= 0) s += `<line x1="${x(idxOf(sc.onset))}" x2="${x(idxOf(sc.onset))}" y1="${T}" y2="${H - B}" stroke="${accent}" stroke-width="1" stroke-dasharray="2 3"/>`;
+  if (r.first_alarm !== null) s += `<line x1="${x(idxOf(r.first_alarm))}" x2="${x(idxOf(r.first_alarm))}" y1="${T}" y2="${H - B}" stroke="${alarm}" stroke-width="1" stroke-dasharray="2 3"/>`;
+  if (base !== null) s += `<line x1="${L}" x2="${W - Rp}" y1="${y(base)}" y2="${y(base)}" stroke="${muted}" stroke-width="1" stroke-dasharray="4 3"/>`;
+  const path = arr => { let d = "", pen = false; arr.forEach((v, i) => { if (v === null) { pen = false; return; } d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`; pen = true; }); return d; };
+  if (extra) s += `<path d="${path(extra)}" fill="none" stroke="${muted}" stroke-width="1.2"/>`;
+  if (vals.every(v => v !== null)) s += `<path d="${path(vals)}L${x(last)},${H - B}L${x(0)},${H - B}Z" fill="${ink}" fill-opacity="0.05"/>`;
+  s += `<path d="${path(vals)}" fill="none" stroke="${ink}" stroke-width="1.8" stroke-linejoin="round"/>`;
+  const cv = vals[state.idx];
+  s += `<line x1="${x(state.idx)}" x2="${x(state.idx)}" y1="${T}" y2="${H - B}" stroke="${ink}" stroke-opacity="0.35"/>`;
+  const bad = cv !== null && tol !== null && (g.dir < 0 ? cv < tol : cv > tol);
+  if (cv !== null) s += `<circle cx="${x(state.idx)}" cy="${y(cv)}" r="3.6" fill="${bad ? alarm : ink}" stroke="${css("--surface")}" stroke-width="1.5"/>`;
+  svg.innerHTML = s;
+  return { cv, bad };
+}
+
+function renderGauges() {
+  const r = R(), box = $("gauges");
+  if (!box.children.length) {
+    GAUGES.forEach(g => {
+      const d = document.createElement("div"); d.className = "gauge";
+      d.innerHTML = `<div class="gh"><h3>${g.label}</h3><span class="val"></span></div><svg role="img" aria-label="${g.label} by cycle"></svg><div class="note">${g.note}</div>`;
+      box.appendChild(d);
+    });
+  }
+  GAUGES.forEach((g, i) => {
+    const d = box.children[i], res = drawGauge(d.querySelector("svg"), g, r) || { cv: null, bad: false };
+    const v = d.querySelector(".val"); v.textContent = fmt(res.cv, g.fmt); v.style.color = res.bad ? "var(--alarm)" : "var(--ink)";
+  });
+}
+
+function renderMap() {
+  const run = runObj(), panel = $("mapPanel");
+  const has = Array.isArray(run.map) && run.map.length;
+  panel.hidden = !has; $("bench").classList.toggle("nomap", !has);
+  if (!has) return;
+  const cv = $("map"), ctx = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1, size = cv.clientWidth || 480;
+  cv.width = Math.round(size * dpr); cv.height = Math.round(size * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, size, size);
+  if (!run._ext) {
+    const xs = [], ys = [];
+    run.map.forEach(pts => pts.forEach(p => { xs.push(Math.abs(p[0])); ys.push(Math.abs(p[1])); }));
+    xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
+    run._ext = Math.max(xs[Math.floor(0.995 * (xs.length - 1))], ys[Math.floor(0.995 * (ys.length - 1))]) * 1.1 || 1;
+  }
+  const e = run._ext, m = 14, sx = v => m + (v + e) / (2 * e) * (size - 2 * m), sy = v => size - m - (v + e) / (2 * e) * (size - 2 * m);
+  ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(sx(0), m); ctx.lineTo(sx(0), size - m); ctx.moveTo(m, sy(0)); ctx.lineTo(size - m, sy(0)); ctx.stroke();
+  const cols = [0, 1, 2, 3, 4, 5, 6, 7].map(i => css(`--c${i}`));
+  const c = R().cycles[state.idx];
+  const pts = (run.map[Math.min(state.idx, run.map.length - 1)] || []).slice().sort((a, b) => a[3] - b[3]);
+  for (const p of pts) {
+    ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), Math.min(11, 2.4 + 1.6 * Math.max(0, p[3])), 0, Math.PI * 2);
+    ctx.fillStyle = cols[p[2] % 8]; ctx.globalAlpha = p[3] > 0.5 ? 0.85 : 0.6; ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  $("mapCycle").textContent = `cycle ${c.cycle} · ${c.status}`;
+  $("msN").textContent = fmt(c.m.memory_size, 0);
+  $("msR").textContent = fmt(c.m.effective_rank, 1);
+  $("msD").textContent = c.m.near_duplicate_fraction === null ? "–" : fmt(c.m.near_duplicate_fraction * 100, 0) + "%";
+}
+
+function renderReadout() {
+  const r = R(), c = r.cycles[state.idx], b = r.cycles[0].m;
+  $("roTitle").innerHTML = `Cycle ${c.cycle} readout <span class="pill ${c.status}">${c.status}</span>`;
+  const rs = $("reason"); rs.className = "reason " + c.status; rs.textContent = c.reason;
+  let h = `<thead><tr><th>Metric</th><th class="num">cycle ${r.cycles[0].cycle}</th><th class="num">cycle ${c.cycle}</th><th class="num">change</th></tr></thead><tbody>`;
+  for (const [k, label, d] of TABLE) {
+    const v = c.m[k], bv = b[k];
+    let ch = "–", cls = "";
+    if (v !== null && bv !== null && v !== undefined && bv !== undefined) {
+      const dv = v - bv; ch = (dv >= 0 ? "+" : "−") + Math.abs(dv).toFixed(d);
+      if (Math.abs(dv) > 1e-9) cls = (HIGHER_BAD.has(k) && dv > 0) || (LOWER_BAD.has(k) && dv < 0) ? "bad" : "good";
+    }
+    h += `<tr><td>${label}</td><td class="num">${fmt(bv, d)}</td><td class="num">${fmt(v, d)}</td><td class="num"><span class="${cls}">${ch}</span></td></tr>`;
+  }
+  $("mtable").innerHTML = h + "</tbody>";
+  const sg = $("signals");
+  if (!c.signals.length) sg.innerHTML = `<p class="muted">No metric has moved past its tolerance from the baseline.</p>`;
+  else {
+    const rel = new Set(["effective_rank", "mean_cosine_distance"]);
+    sg.innerHTML = c.signals.map(s => {
+      const ex = rel.has(s.metric) ? `${(s.excess * 100).toFixed(1)}% worse (tolerance ${(s.tol * 100).toFixed(0)}%)` : `${fmt(s.excess, 3)} worse (tolerance ${fmt(s.tol, 3)})`;
+      return `<div class="item${s.weak ? " weak" : ""}"><span class="cat">${esc(s.cat)}${s.weak ? " · weak" : ""}</span><div><b>${esc(s.name.replace(/_/g, " "))}</b><div class="detail">${esc(s.metric)} ${fmt(s.base, 3)} → ${fmt(s.value, 3)} · ${ex}</div></div></div>`;
+    }).join("");
+  }
+  const bl = r.blame && r.blame[String(state.idx)];
+  const bt = $("btable");
+  if (!bl) { $("blameSub").textContent = "no regressed probes this cycle"; bt.innerHTML = `<tbody><tr><td class="muted">Nothing to trace: no probe that passed at the baseline fails here.</td></tr></tbody>`; return; }
+  $("blameSub").textContent = `${bl.regressed} probe${bl.regressed === 1 ? "" : "s"} regressed`;
+  const maxHits = Math.max(...bl.suspects.map(s => s.hits), 1);
+  bt.innerHTML = `<thead><tr><th>Memory</th><th class="num">regressed hits</th><th></th><th class="num">lift</th><th class="num">share then → now</th><th class="num">first seen</th></tr></thead><tbody>` +
+    bl.suspects.map(s => `<tr><td class="mono">${esc(s.id)}</td><td class="num">${s.hits}</td><td style="width:70px"><div class="bar"><i style="width:${(100 * s.hits / maxHits).toFixed(0)}%"></i></div></td><td class="num">${fmt(s.lift, 2)}</td><td class="num">${fmt((s.sb || 0) * 100, 1)}% → ${fmt((s.sn || 0) * 100, 1)}%</td><td class="num">${s.fs === null ? "–" : s.fs}</td></tr>`).join("") + "</tbody>";
+}
+
+function renderHealth() {
+  const h = R().health || { counts: {}, recommendations: [] };
+  const order = ["saturated", "unsolved", "flaky", "regressed", "improved", "mixed", "unscored"];
+  $("healthChips").innerHTML = order.filter(k => h.counts[k]).map(k => `<span class="chip">${k} ${h.counts[k]}</span>`).join("");
+  $("healthRecs").innerHTML = h.recommendations.map(t => `<li>${esc(t)}</li>`).join("");
+}
+
+function render() {
+  if (state.idx >= N()) state.idx = N() - 1;
+  buildControls();
+  $("scenDesc").textContent = scen().description || "";
+  $("scenDesc").hidden = !scen().description;
+  renderTape(); renderVerdict(); renderGauges(); renderMap(); renderReadout(); renderHealth();
+}
+function stop() { if (state.playing) { clearInterval(state.playing); state.playing = null; $("play").textContent = "▶ Play cycles"; } }
+$("play").onclick = () => {
+  if (state.playing) return stop();
+  if (state.idx >= N() - 1) state.idx = 0;
+  $("play").textContent = "❚❚ Pause";
+  const slow = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  state.playing = setInterval(() => { state.idx++; render(); if (state.idx >= N() - 1) stop(); }, slow ? 1200 : 650);
+  render();
+};
+$("cyc").oninput = e => { stop(); state.idx = +e.target.value; render(); };
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "range") return;
+  if (e.target.id === "cyc") return;
+  if (e.key === "ArrowRight" && state.idx < N() - 1) { stop(); state.idx++; render(); }
+  if (e.key === "ArrowLeft" && state.idx > 0) { stop(); state.idx--; render(); }
+});
+const redraw = () => { renderGauges(); renderMap(); };
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
+new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+window.addEventListener("resize", () => renderMap());
+
+const meta = DATA.meta || {};
+$("eyebrow").textContent = meta.eyebrow || "REGRESS";
+$("heading").textContent = meta.heading || "REGRESS";
+$("lede").textContent = meta.lede || "";
+if (Array.isArray(meta.links) && meta.links.length) {
+  const p = document.createElement("p");
+  p.className = "lede";
+  p.innerHTML = meta.links.map(l => `<a href="${esc(l.href)}">${esc(l.label)} →</a>`).join(" · ");
+  $("lede").after(p);
+}
+$("footer").textContent = meta.footer || "";
+if (meta.mode === "report") $("explain").hidden = true;
+{ const fa = R().first_alarm; state.idx = fa === null ? N() - 1 : Math.max(0, idxOf(fa)); }
+render();
+</script>
+</body>
+</html>

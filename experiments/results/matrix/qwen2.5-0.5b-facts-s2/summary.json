@@ -1,0 +1,758 @@
+{
+ "backend": "llamacpp:qwen2.5-0.5b-instruct-q4_k_m.gguf",
+ "settings": {
+  "cycles": 6,
+  "people": 16,
+  "seed": 2,
+  "task": "facts",
+  "audit_fraction": 0.25,
+  "ablate": false
+ },
+ "regime_specs": [
+  {
+   "label": "faithful",
+   "regime": "faithful",
+   "overrides": {
+    "agent_kwargs": {}
+   }
+  },
+  {
+   "label": "full",
+   "regime": "recursive_summary",
+   "overrides": {
+    "agent_kwargs": {}
+   }
+  },
+  {
+   "label": "full+guard",
+   "regime": "recursive_summary",
+   "overrides": {
+    "guard": "strict",
+    "agent_kwargs": {
+     "compress_chunks": 2
+    }
+   }
+  },
+  {
+   "label": "full+guard+learn",
+   "regime": "recursive_summary",
+   "overrides": {
+    "guard": "strict",
+    "guard_learning": true,
+    "agent_kwargs": {
+     "compress_chunks": 2
+    }
+   }
+  },
+  {
+   "label": "gradual",
+   "regime": "recursive_summary",
+   "overrides": {
+    "agent_kwargs": {
+     "compress_fraction": 0.25
+    }
+   }
+  }
+ ],
+ "results": {
+  "faithful": {
+   "regime": "faithful",
+   "first_alarm": null,
+   "first_signal": null,
+   "statuses": [
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK"
+   ],
+   "accuracy": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "effective_rank": [
+    16.35598706140583,
+    18.377434370078596,
+    20.109852151776412,
+    21.372194981025682,
+    22.467023587035644,
+    23.59853669279367,
+    24.397507389606005
+   ],
+   "retrieval_entropy": [
+    0.9599927419201424,
+    0.9261719940596169,
+    0.9043039428500573,
+    0.8868077488699259,
+    0.8780606194038905,
+    0.8675063683168455,
+    0.8572172489645727
+   ],
+   "mean_confidence": [
+    0.9784624014903076,
+    0.9784197212458324,
+    0.9813492930819159,
+    0.9809988456811678,
+    0.9813562433732567,
+    0.980780334371079,
+    0.9808142478311128
+   ],
+   "memory_size": [
+    48.0,
+    60.0,
+    72.0,
+    84.0,
+    96.0,
+    108.0,
+    120.0
+   ],
+   "bisect": null,
+   "onset": null,
+   "ablation": null,
+   "model_calls": 138,
+   "probe_calls": 336,
+   "cache_hits": 0,
+   "seconds": 57.9,
+   "consolidation": [
+    {
+     "cycle": 1,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 2,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 3,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 4,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 5,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    },
+    {
+     "cycle": 6,
+     "added": 12,
+     "self_notes": 0,
+     "summaries": 0,
+     "removed": 0
+    }
+   ],
+   "task": "facts",
+   "guarded": false,
+   "guard": null,
+   "audit_accuracy": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "fresh_accuracy": 1.0,
+   "fresh_probes": 40
+  },
+  "full": {
+   "regime": "full",
+   "first_alarm": 1,
+   "first_signal": 1,
+   "statuses": [
+    "OK",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM"
+   ],
+   "accuracy": [
+    1.0,
+    0.3333333333333333,
+    0.1111111111111111,
+    0.1111111111111111,
+    0.027777777777777776,
+    0.027777777777777776,
+    0.1388888888888889
+   ],
+   "effective_rank": [
+    16.35598706140583,
+    18.033853720967805,
+    16.647474166210447,
+    14.801949350323364,
+    15.109766614519115,
+    14.021021902069862,
+    14.087312455165025
+   ],
+   "retrieval_entropy": [
+    0.9599927419201424,
+    0.8142259505411011,
+    0.817042137556304,
+    0.8372907506971363,
+    0.8122041305433848,
+    0.8418137135139946,
+    0.8225104284847242
+   ],
+   "mean_confidence": [
+    0.9784624014903076,
+    0.845754096076999,
+    0.7723096144778405,
+    0.7733645061161559,
+    0.8413303624519402,
+    0.7724393866697973,
+    0.8058322258318537
+   ],
+   "memory_size": [
+    48.0,
+    34.0,
+    30.0,
+    28.0,
+    28.0,
+    27.0,
+    27.0
+   ],
+   "bisect": {
+    "first_bad": 1,
+    "last_good": 0,
+    "evaluations": 4,
+    "consistent": true
+   },
+   "onset": 1,
+   "ablation": null,
+   "model_calls": 420,
+   "probe_calls": 336,
+   "cache_hits": 216,
+   "seconds": 242.5,
+   "consolidation": [
+    {
+     "cycle": 1,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 16,
+     "removed": 48
+    },
+    {
+     "cycle": 2,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 11,
+     "removed": 33
+    },
+    {
+     "cycle": 3,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 10,
+     "removed": 30
+    },
+    {
+     "cycle": 4,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 9,
+     "removed": 27
+    },
+    {
+     "cycle": 5,
+     "added": 12,
+     "self_notes": 5,
+     "summaries": 9,
+     "removed": 27
+    },
+    {
+     "cycle": 6,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 9,
+     "removed": 27
+    }
+   ],
+   "task": "facts",
+   "guarded": false,
+   "guard": null,
+   "audit_accuracy": [
+    1.0,
+    0.3333333333333333,
+    0.08333333333333333,
+    0.08333333333333333,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "fresh_accuracy": 0.275,
+   "fresh_probes": 40
+  },
+  "full+guard": {
+   "regime": "full+guard",
+   "first_alarm": null,
+   "first_signal": null,
+   "statuses": [
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "OK"
+   ],
+   "accuracy": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.9444444444444444,
+    0.9444444444444444,
+    0.9444444444444444
+   ],
+   "effective_rank": [
+    16.35598706140583,
+    19.366038766434702,
+    21.06308078711261,
+    22.293341753618584,
+    19.92119613471793,
+    22.643737022175348,
+    23.449957054780494
+   ],
+   "retrieval_entropy": [
+    0.9599927419201424,
+    0.8655591833153123,
+    0.8332041338885607,
+    0.8117933486489801,
+    0.9000013417743478,
+    0.8164036643922146,
+    0.8118061808901941
+   ],
+   "mean_confidence": [
+    0.9784624014903076,
+    0.977311284562938,
+    0.9769268392192504,
+    0.9768487619155789,
+    0.9648864363277025,
+    0.960765289653335,
+    0.9643064643655896
+   ],
+   "memory_size": [
+    48.0,
+    66.0,
+    78.0,
+    90.0,
+    60.0,
+    78.0,
+    84.0
+   ],
+   "bisect": null,
+   "onset": null,
+   "ablation": null,
+   "model_calls": 646,
+   "probe_calls": 984,
+   "cache_hits": 216,
+   "seconds": 351.3,
+   "consolidation": [
+    {
+     "cycle": 1,
+     "kept_stages": [
+      "observe",
+      "self_train"
+     ],
+     "rejected_stages": [
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 2,
+     "kept_stages": [
+      "observe"
+     ],
+     "rejected_stages": [
+      "self_train",
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 3,
+     "kept_stages": [
+      "observe"
+     ],
+     "rejected_stages": [
+      "self_train",
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 4,
+     "kept_stages": [
+      "compress_2/2"
+     ],
+     "rejected_stages": [
+      "observe",
+      "self_train",
+      "compress_1/2"
+     ]
+    },
+    {
+     "cycle": 5,
+     "kept_stages": [
+      "observe",
+      "self_train"
+     ],
+     "rejected_stages": [
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 6,
+     "kept_stages": [
+      "self_train"
+     ],
+     "rejected_stages": [
+      "observe",
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    }
+   ],
+   "task": "facts",
+   "guarded": true,
+   "guard": {
+    "decisions": 24,
+    "rejected": 16,
+    "rejection_rate": 0.6666666666666666,
+    "accept_rate_by_stage": {
+     "observe": 0.6666666666666666,
+     "self_train": 0.5,
+     "compress": 0.08333333333333333
+    }
+   },
+   "audit_accuracy": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.9166666666666666,
+    0.9166666666666666,
+    0.9166666666666666
+   ],
+   "fresh_accuracy": 0.35,
+   "fresh_probes": 40
+  },
+  "full+guard+learn": {
+   "regime": "full+guard+learn",
+   "first_alarm": null,
+   "first_signal": 4,
+   "statuses": [
+    "OK",
+    "OK",
+    "OK",
+    "OK",
+    "WATCH",
+    "WATCH",
+    "WATCH"
+   ],
+   "accuracy": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "effective_rank": [
+    16.35598706140583,
+    19.366038766434702,
+    21.06308078711261,
+    22.293341753618584,
+    23.899419235143366,
+    25.37216178257109,
+    26.462289072694595
+   ],
+   "retrieval_entropy": [
+    0.9599927419201424,
+    0.8655591833153123,
+    0.8332041338885607,
+    0.8117933486489801,
+    0.7609456255647197,
+    0.7639035361467647,
+    0.7688801442259526
+   ],
+   "mean_confidence": [
+    0.9784624014903076,
+    0.977311284562938,
+    0.9769268392192504,
+    0.9768487619155789,
+    0.9796567469822653,
+    0.9805198235044524,
+    0.9823496280553962
+   ],
+   "memory_size": [
+    48.0,
+    66.0,
+    78.0,
+    90.0,
+    108.0,
+    124.0,
+    142.0
+   ],
+   "bisect": null,
+   "onset": null,
+   "ablation": null,
+   "model_calls": 483,
+   "probe_calls": 984,
+   "cache_hits": 540,
+   "seconds": 249.3,
+   "consolidation": [
+    {
+     "cycle": 1,
+     "kept_stages": [
+      "observe",
+      "self_train"
+     ],
+     "rejected_stages": [
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 2,
+     "kept_stages": [
+      "observe"
+     ],
+     "rejected_stages": [
+      "self_train",
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 3,
+     "kept_stages": [
+      "observe"
+     ],
+     "rejected_stages": [
+      "self_train",
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 4,
+     "kept_stages": [
+      "observe",
+      "self_train"
+     ],
+     "rejected_stages": [
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 5,
+     "kept_stages": [
+      "observe",
+      "self_train"
+     ],
+     "rejected_stages": [
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    },
+    {
+     "cycle": 6,
+     "kept_stages": [
+      "observe",
+      "self_train"
+     ],
+     "rejected_stages": [
+      "compress_1/2",
+      "compress_2/2"
+     ]
+    }
+   ],
+   "task": "facts",
+   "guarded": true,
+   "guard": {
+    "decisions": 24,
+    "rejected": 14,
+    "rejection_rate": 0.5833333333333334,
+    "accept_rate_by_stage": {
+     "observe": 1.0,
+     "self_train": 0.6666666666666666,
+     "compress": 0.0
+    }
+   },
+   "audit_accuracy": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "fresh_accuracy": 1.0,
+   "fresh_probes": 40
+  },
+  "gradual": {
+   "regime": "gradual",
+   "first_alarm": 1,
+   "first_signal": 1,
+   "statuses": [
+    "OK",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM",
+    "ALARM"
+   ],
+   "accuracy": [
+    1.0,
+    0.7777777777777778,
+    0.6944444444444444,
+    0.4722222222222222,
+    0.4444444444444444,
+    0.3611111111111111,
+    0.2777777777777778
+   ],
+   "effective_rank": [
+    16.35598706140583,
+    19.207972399181234,
+    21.385842548355466,
+    22.28269440477465,
+    24.63495635367796,
+    26.289156257782864,
+    26.56044718396574
+   ],
+   "retrieval_entropy": [
+    0.9599927419201424,
+    0.8429756540946609,
+    0.7506694143446839,
+    0.7216124243279588,
+    0.7329236953826831,
+    0.7363249866124575,
+    0.731532313936003
+   ],
+   "mean_confidence": [
+    0.9784624014903076,
+    0.9473855949324361,
+    0.9431652901164522,
+    0.9005592091032987,
+    0.8821146599724022,
+    0.836322613737329,
+    0.8557471340870045
+   ],
+   "memory_size": [
+    48.0,
+    58.0,
+    67.0,
+    73.0,
+    79.0,
+    83.0,
+    87.0
+   ],
+   "bisect": {
+    "first_bad": 1,
+    "last_good": 0,
+    "evaluations": 4,
+    "consistent": true
+   },
+   "onset": 1,
+   "ablation": null,
+   "model_calls": 294,
+   "probe_calls": 336,
+   "cache_hits": 216,
+   "seconds": 156.8,
+   "consolidation": [
+    {
+     "cycle": 1,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 4,
+     "removed": 12
+    },
+    {
+     "cycle": 2,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 5,
+     "removed": 14
+    },
+    {
+     "cycle": 3,
+     "added": 12,
+     "self_notes": 5,
+     "summaries": 6,
+     "removed": 17
+    },
+    {
+     "cycle": 4,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 6,
+     "removed": 18
+    },
+    {
+     "cycle": 5,
+     "added": 12,
+     "self_notes": 5,
+     "summaries": 7,
+     "removed": 20
+    },
+    {
+     "cycle": 6,
+     "added": 12,
+     "self_notes": 6,
+     "summaries": 7,
+     "removed": 21
+    }
+   ],
+   "task": "facts",
+   "guarded": false,
+   "guard": null,
+   "audit_accuracy": [
+    1.0,
+    1.0,
+    0.6666666666666666,
+    0.5,
+    0.4166666666666667,
+    0.4166666666666667,
+    0.4166666666666667
+   ],
+   "fresh_accuracy": 0.65,
+   "fresh_probes": 40
+  }
+ },
+ "separates": true,
+ "model": "qwen2.5-0.5b",
+ "wall_seconds": 1057.9
+}

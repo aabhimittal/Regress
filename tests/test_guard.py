@@ -189,3 +189,101 @@ def test_function_agents_can_be_guarded_with_deepcopy():
     guard = ConsolidationGuard(m)
     kept, _ = guard.run_cycle(agent, 1, [("noop", lambda a: None)])
     assert guard.decisions[0].accepted and kept is not agent  # a deep copy was committed
+
+
+
+def test_commit_always_forces_data_stages_and_retention_blocks_forgetting_new_facts():
+    m = RegressionMonitor(suite())
+    agent = Breakable()
+    agent.learned = set()
+    m.evaluate(agent, 0)
+
+    def observe(a):  # brings in data that, on its own, hurts the frozen suite
+        a.learned |= {1, 2, 3, 4}
+        a.broken |= set(range(0, 60))
+
+    def forget_new(a):  # harmless to the frozen suite, destroys recent knowledge
+        a.learned -= {1, 2, 3}
+
+    def retention(a):
+        return len(a.learned & {1, 2, 3, 4}) / 4
+
+    guard = ConsolidationGuard(m, commit_always=("observe",), retention=retention, retention_tolerance=0.1)
+    agent, rep = guard.run_cycle(agent, 1, [("observe", observe), ("compress", forget_new)])
+    assert agent.learned == {1, 2, 3, 4}  # data committed, forgetting rejected
+    assert [d.status for d in guard.decisions] == ["FORCED", "RETENTION"]
+    assert "retention 1.00 -> 0.25" in guard.decisions[1].reason
+    assert rep.status == "ALARM"  # forcing data in does not hide what it did to old knowledge
+
+    def crash(a):
+        raise RuntimeError("boom")
+
+    agent2, _ = guard.run_cycle(agent, 2, [("observe_bad", crash)])
+    assert agent2 is agent and guard.decisions[-1].status == "ERROR"  # forced stages still cannot crash in
+    with pytest.raises(ValueError):
+        ConsolidationGuard(m, retention_tolerance=1.0)
+
+
+def test_learning_aware_guard_keeps_new_facts_the_plain_guard_loses():
+    kw = dict(cycles=4, people=10, seed=0, audit_fraction=0.25, ablate=False)
+    plain, _, _ = run_regime(RuleBackend(), "recursive_summary", guard="strict",
+                             agent_kwargs={"compress_chunks": 2}, **kw)
+    learn, _, _ = run_regime(RuleBackend(), "recursive_summary", guard="strict", guard_learning=True,
+                             agent_kwargs={"compress_chunks": 2}, **kw)
+    faithful, _, _ = run_regime(RuleBackend(), "faithful", **kw)
+    assert faithful.fresh_accuracy == 1.0 and faithful.fresh_probes > 0
+    assert learn.fresh_accuracy > plain.fresh_accuracy + 0.2
+    assert learn.guard["accept_rate_by_stage"]["observe"] == 1.0
+    assert plain.guard["accept_rate_by_stage"]["observe"] < 1.0
+    with pytest.raises(ValueError):
+        run_regime(RuleBackend(), "faithful", guard_learning=True, **kw)
+
+def test_matrix_results_are_indexed_and_aggregated(tmp_path):
+    import importlib.util
+    import json
+
+    from regress.llm import run_experiment
+    from regress.site import build_results_index
+
+    job = tmp_path / "matrix" / "rules-facts-s0"
+    regimes = [("faithful", "faithful", {}), ("full", "recursive_summary", {}),
+               ("full+guard", "recursive_summary", {"guard": "strict", "agent_kwargs": {"compress_chunks": 2}}),
+               ("gradual", "recursive_summary", {"agent_kwargs": {"compress_fraction": 0.25}})]
+    summary = run_experiment(RuleBackend(), regimes=regimes, out_dir=job, cycles=3, people=8, seed=0,
+                             audit_fraction=0.25, ablate=False)
+    (job / "summary.json").write_text(json.dumps(summary, default=str))
+    page = build_results_index(tmp_path / "matrix", tmp_path / "site")
+    html = page.read_text()
+    assert "rules-facts-s0" in html and "guard rejected" in html and "audit" in html
+    assert (tmp_path / "site" / "rules-facts-s0" / "report-full+guard.html").is_file()
+
+    spec = importlib.util.spec_from_file_location("aggregate", "experiments/aggregate.py")
+    agg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agg)
+    assert agg.main(str(tmp_path / "matrix"), str(tmp_path / "M.md")) == 0
+    checks = json.loads((tmp_path / "M.json").read_text())
+    assert checks[0]["control_quiet"] and checks[0]["full_caught"]
+    assert checks[0]["guard_end_acc"] > checks[0]["unguarded_end_acc"]
+    assert checks[0]["control_fresh"] == 1.0 and checks[0]["guard_fresh"] is not None
+    assert agg.main(str(tmp_path / "empty"), str(tmp_path / "N.md")) == 1
+
+
+MATRIX = __import__("pathlib").Path(__file__).resolve().parent.parent / "experiments" / "results" / "matrix"
+MATRIX_JOBS = sorted(p.parent for p in MATRIX.glob("*/summary.json")) if MATRIX.exists() else []
+
+
+@pytest.mark.skipif(not MATRIX_JOBS, reason="no recorded matrix runs present")
+@pytest.mark.parametrize("job", MATRIX_JOBS, ids=lambda p: p.name)
+def test_recorded_matrix_job_replays_exactly(tmp_path, job):
+    """Every committed model × task × seed run re-runs bit-for-bit from its recorded outputs."""
+    import json
+
+    from regress.cli import main
+
+    assert main(["experiment", "--backend", "replay", "--replay-from", str(job), "--out", str(tmp_path)]) == 0
+    got = json.loads((tmp_path / "summary.json").read_text())
+    want = json.loads((job / "summary.json").read_text())
+    assert got["separates"] == want["separates"]
+    for regime, w in want["results"].items():
+        for f in ("first_alarm", "statuses", "accuracy", "audit_accuracy", "guard", "fresh_accuracy"):
+            assert got["results"][regime].get(f) == w.get(f), (regime, f)
