@@ -47,8 +47,12 @@ class RetrievalStats:
 
 
 def retrieval_stats(
-    retrieved: Iterable[Sequence[str]], memory_ids: Iterable[str] | None = None
+    retrieved: Iterable[Sequence[str]],
+    memory_ids: Iterable[str] | None = None,
+    memory_size: int | None = None,
 ) -> RetrievalStats:
+    """``memory_size`` stands in for ``memory_ids`` when only the size is known (e.g. when
+    re-scoring a stored baseline on a probe subset); it sets the normalisation, not phantoms."""
     # An agent that lists the same memory twice for one query consulted it once.
     lists = [list(dict.fromkeys(str(i) for i in r)) for r in retrieved]
     all_events = [str(i) for r in lists for i in r]
@@ -67,7 +71,12 @@ def retrieval_stats(
 
     p = np.array(list(counts.values()), dtype=float) / events
     h = float(-np.sum(p * np.log2(p)))
-    n_mem = len(universe) if universe is not None else len(counts)
+    if universe is not None:
+        n_mem = len(universe)
+    elif memory_size is not None and memory_size > 0:
+        n_mem = max(int(memory_size), len(counts))
+    else:
+        n_mem = len(counts)
     max_outcomes = min(n_mem, events)
     norm = h / math.log2(max_outcomes) if max_outcomes > 1 else float("nan")
     full = list(counts.values())

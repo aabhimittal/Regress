@@ -16,7 +16,10 @@ def run(name, seed=0, cycles=16):
 
 def test_simulation_is_deterministic():
     a, b = run("collapse", seed=3)[1], run("collapse", seed=3)[1]
-    assert [r.metrics for r in a.history] == [r.metrics for r in b.history]
+    for ra, rb in zip(a.history, b.history):
+        assert ra.metrics.keys() == rb.metrics.keys()
+        for k in ra.metrics:
+            assert ra.metrics[k] == rb.metrics[k] or (ra.metrics[k] != ra.metrics[k] and rb.metrics[k] != rb.metrics[k]), k
 
 
 def test_checkpoints_are_independent_copies():

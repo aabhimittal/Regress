@@ -27,9 +27,21 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
-from .detector import SIGNALS, Thresholds
+from .detector import SIGNALS, CusumConfig, Thresholds
 
-__all__ = ["MetricCalibration", "Calibration", "calibrate"]
+__all__ = ["MetricCalibration", "Calibration", "calibrate", "calibrate_cusum", "family_quantile"]
+
+
+def family_quantile(horizon: int, n_signals: int, alpha: float = 0.05) -> float:
+    """Per-test quantile that keeps the family-wise false-alarm rate near ``alpha``.
+
+    Running ``n_signals`` checks every cycle for ``horizon`` cycles is ``horizon × n_signals``
+    tests. A 99.9 % per-test threshold gives ~1 − 0.999^(365×12) ≈ 99 % odds of at least one
+    false signal in a year of nightly cycles. Bonferroni: each test gets α / (horizon × n).
+    """
+    if horizon < 1 or n_signals < 1 or not 0 < alpha < 1:
+        raise ValueError("need horizon >= 1, n_signals >= 1, 0 < alpha < 1")
+    return 1.0 - alpha / (horizon * n_signals)
 
 
 @dataclass
@@ -88,11 +100,20 @@ def calibrate(
     floor_fraction: float = 0.25,
     min_samples: int = 10,
     base: Thresholds | None = None,
+    horizon: int | None = None,
+    alpha: float = 0.05,
 ) -> Calibration:
     """Derive :class:`Thresholds` from histories of healthy learning cycles.
 
     ``histories`` are monitor histories (lists of ``CycleReport`` or their dicts). Cycle 0 of
     each is its baseline and contributes no sample.
+
+    With ``horizon`` (the number of cycles you expect to monitor), each tolerance is also
+    raised to a Gaussian tail estimate at the family-wise quantile
+    ``1 − alpha / (horizon × signals)``: median + z·1.4826·MAD of the healthy moves. Empirical
+    quantiles cannot reach that far into the tail with a few hundred samples, so the tail is
+    extrapolated. The extrapolation assumes roughly Gaussian healthy noise; heavy tails will
+    still leak false alarms.
     """
     if not 0.5 <= quantile < 1.0:
         raise ValueError("quantile must be in [0.5, 1)")
@@ -103,6 +124,12 @@ def calibrate(
     base = base or Thresholds()
     chosen = base.to_dict()
     rows: list[MetricCalibration] = []
+    tail_z = None
+    if horizon is not None:
+        from statistics import NormalDist
+
+        n_specs = sum(1 for s in SIGNALS if not s.weak)
+        tail_z = NormalDist().inv_cdf(family_quantile(horizon, n_specs, alpha))
     for spec in SIGNALS:
         if spec.name not in chosen:
             continue
@@ -114,6 +141,11 @@ def calibrate(
             continue
         observed = float(np.quantile(moves, quantile))
         candidate = max(observed, 0.0) * margin
+        if tail_z is not None:
+            arr = np.asarray(moves, dtype=float)
+            med = float(np.median(arr))
+            spread = 1.4826 * float(np.median(np.abs(arr - med)))
+            candidate = max(candidate, med + tail_z * spread)
         floor = default * floor_fraction
         if candidate < floor:
             value, reason = floor, f"floored at {floor_fraction:.0%} of default"
@@ -123,3 +155,35 @@ def calibrate(
         chosen[spec.name] = value
         rows.append(MetricCalibration(spec.name, len(moves), observed, default, value, reason))
     return Calibration(Thresholds.from_dict(chosen), quantile, margin, rows)
+
+
+def calibrate_cusum(
+    histories: Sequence[Sequence],
+    k: float = 0.25,
+    margin: float = 1.5,
+    floor: float = 2.0,
+) -> CusumConfig:
+    """Pick the CUSUM decision threshold ``h`` from healthy histories.
+
+    Replays each history's recorded standardised moves (``CycleReport.moves``) through the
+    CUSUM and sets ``h`` to the largest statistic any healthy run ever reached, times
+    ``margin``, never below ``floor``. Healthy runs should be as long as the horizon you
+    intend to monitor: a CUSUM's healthy maximum grows with run length.
+    """
+    if k < 0 or margin < 1 or floor <= 0:
+        raise ValueError("need k >= 0, margin >= 1, floor > 0")
+    peak = 0.0
+    for hist in histories:
+        rows = [h.moves if hasattr(h, "moves") else h.get("moves", {}) for h in hist[1:]]
+        names = {n for r in rows for n in r}
+        for spec in SIGNALS:
+            if spec.weak or spec.name not in names:
+                continue
+            series = [r.get(spec.name, float("nan")) for r in rows]
+            s = 0.0
+            for z in series:  # running maximum, not just the final value
+                if z is None or not math.isfinite(z):
+                    continue
+                s = max(0.0, s + min(z, 3.0) - k)
+                peak = max(peak, s)
+    return CusumConfig(k=k, h=max(floor, peak * margin))

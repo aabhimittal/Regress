@@ -85,6 +85,83 @@ Accuracy only falls apart from cycle 14. That gap is the point of the project.
 
 ---
 
+## Does it work on a real agent?
+
+The simulator was built to collapse, so it cannot answer this. `regress.llm` runs REGRESS on
+an agent driven by a **real language model**: a note-memory QA agent over a *fictional* fact
+world (invented people, cities, professions and pets), so the model cannot answer from
+pre-training. Two regimes run on identical facts:
+
+* **faithful**: new facts are stored verbatim. This is the control.
+* **recursive_summary**: the agent answers questions on its own and writes its answers back
+  as notes (no feedback), then has the model compress clusters of old notes into one short
+  note. Next cycle it compresses the summaries again.
+
+Recorded run: **Qwen2.5-0.5B-Instruct (Q4 GGUF) on CPU via llama.cpp**, 20 people (60
+probes), 8 cycles, 4 new people per cycle. Confidence is the model's own token probability.
+
+| | cycle 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| faithful: status | · | · | · | · | · | · | · | · | · |
+| faithful: accuracy | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| recursive: status | · | ▲ | ▲ | ▲ | ▲ | ▲ | ▲ | ▲ | ▲ |
+| recursive: accuracy | 1.00 | 0.45 | 0.13 | 0.00 | 0.02 | 0.00 | 0.03 | 0.07 | 0.00 |
+| recursive: effective rank | 18.1 | 20.5 | 17.4 | 16.4 | 15.9 | 15.3 | 13.7 | 13.9 | 14.5 |
+| recursive: mean confidence | 0.98 | 0.78 | 0.81 | 0.77 | 0.75 | 0.87 | 0.84 | 0.82 | 0.84 |
+
+What it shows:
+
+* **REGRESS separates the regimes on a real model.** The control produced zero signals in
+  9 cycles. The bad regime alarmed at cycle 1, the first bad cycle. Bisection found cycle 1
+  in 5 evaluations, and the onset estimate is cycle 1.
+* **The collapse signature from the design did *not* appear.** Damage was immediate, not
+  gradual. Accuracy fell from 1.00 to 0.45 at the first compression. Diversity briefly *rose*
+  (merged summaries mix vocabulary) before falling, and expressed confidence *fell*. The
+  alarm came from the multi-category rule (accuracy, retrieval entropy, overconfidence).
+  Requiring the combination was more robust than the specific "diversity ↓ + confidence ↑"
+  pattern the thesis predicted.
+* **Overconfidence exploded, but read it carefully.** Accuracy is 0 while confidence stays
+  around 0.8. Many answers are a confident "unknown". Token probability measures certainty
+  of the *output*, so a confident abstention scores as overconfident. Agents that abstain
+  need a scorer or confidence channel that treats "unknown" separately.
+* **Ablation correctly refused the blame.** Removing the top 4 suspects restored 1 of 33
+  regressed probes, against 2 for random controls (verdict: refuted). The damage was
+  information destroyed by compression, not a harmful memory that removal could fix.
+
+**Gradual variant** (`--compress-fraction 0.25`: compress only the oldest quarter of notes
+each cycle), same model and facts:
+
+| | cycle 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| status | · | ~ | ▲ | ▲ | ▲ | ▲ | ▲ | ▲ | ▲ |
+| accuracy | 1.00 | 0.90 | 0.75 | 0.65 | 0.62 | 0.55 | 0.42 | 0.37 | 0.30 |
+| retrieval entropy | 0.97 | 0.89 | 0.80 | 0.77 | 0.77 | 0.76 | 0.75 | 0.74 | 0.74 |
+| effective rank | 18.1 | 19.6 | 22.1 | 23.4 | 25.6 | 26.5 | 26.3 | 26.4 | 26.6 |
+| mean confidence | 0.98 | 0.94 | 0.93 | 0.90 | 0.91 | 0.88 | 0.89 | 0.85 | 0.85 |
+
+REGRESS warns at cycle 1 and alarms at cycle 2, while accuracy is still 0.75 on its way down
+to 0.30. Bisection pins cycle 2 and the onset estimate is cycle 1, which is exactly where the
+bad consolidation started. **Homogenisation showed up in retrieval, not in embedding
+diversity.** A few summaries absorb more and more queries, so retrieval entropy falls from
+0.97 to 0.74. Effective rank *rises*, because summaries combine distinct vocabulary while
+new facts keep arriving. If you monitor only embedding diversity, you miss this failure.
+
+Reproduce:
+
+```bash
+pip install -e ".[llm]"                     # llama-cpp-python
+python experiments/run_local_llm.py --model qwen2.5-0.5b-instruct-q4_k_m.gguf --out runs/qwen
+regress experiment --backend replay --replay-from experiments/results/qwen2.5-0.5b-q4 --out /tmp/replay
+regress experiment --backend anthropic --out runs/claude      # needs Anthropic credentials
+```
+
+The recorded model outputs (`llm-cache.jsonl`) are committed. `--backend replay` re-runs the
+whole experiment bit-for-bit without the model, and CI does exactly that. **Scope:** one
+small model, one synthetic task, one seed. It is evidence that the detector works on a real
+learning loop, not a benchmark of how real agents fail.
+
+---
+
 ## Using it with your agent
 
 Your agent needs two methods:
@@ -238,6 +315,83 @@ snapshot = memory_from_texts(ids, texts)                      # dependency-free 
 snapshot = memory_from_texts(ids, texts, my_sentence_model)   # anything with .embed(list[str])
 ```
 
+### Measure diversity with your own ruler
+
+Diversity used to be computed from the agent's own embeddings, which lets the agent grade
+its own exam. If a learning cycle swaps the embedding model, the numbers move for reasons
+unrelated to memory health. Give the snapshot the memory **texts** and REGRESS re-embeds
+them with a fixed embedder it owns:
+
+```python
+MemorySnapshot(ids, agent_vectors, texts=memory_texts)   # ruler="auto" picks "reference"
+RegressionMonitor(suite, ruler="reference")               # or "agent", or any obj with .embed()
+```
+
+Each report records which ruler it used, and a mid-run ruler change is reported as
+not comparable. `embedding_drift` (1 − cosine between a memory's old and new vector, by id)
+raises a weak `embedding_changed` signal when the agent's own space moves. In the tests,
+swapping the agent's embedder for a 2-D one creates a false "collapse" on the agent ruler
+and nothing on the reference ruler.
+
+### Uncertainty, long horizons, and a negative result
+
+* **Standard errors on every rate.** Effective rank and pairwise spread are bootstrapped over
+  memories, retrieval entropy over probes, and confidence uses its sampling SE. Each signal
+  must clear `significance_z × SE` as well as its tolerance, so a 4-memory store cannot
+  "collapse" by losing one item.
+* **Horizon-aware calibration.** Checking 12 signals every night for a year is about 4,400
+  tests. `calibrate(..., horizon=365, alpha=0.05)` raises each tolerance to a Gaussian tail
+  estimate at the Bonferroni quantile 1 − α / (horizon × signals).
+* **CUSUM is available but off by default, because it lost the test.** `CusumConfig` adds a
+  sequential test that accumulates sub-threshold harm. On 100-cycle simulator runs:
+
+  | configuration | false-alarm cycles, 5 healthy × 100 cycles | gentle "creep" collapse caught (cycles after onset) |
+  |---|---|---|
+  | default thresholds | 0 | never, in 4 of 4 runs |
+  | calibrated per-cycle (99.9 % × 1.5) | 0 | 2, 2, 5, 6 |
+  | calibrated + horizon (H = 100) | 0 | 4, 2, 5, 6 |
+  | horizon + CUSUM (k = 0.25, h calibrated) | **30** | 4, 2, 5, 6 |
+
+  CUSUM assumes healthy moves are independent noise. Healthy memory here *drifts*
+  persistently, so CUSUM accumulates healthy drift and fires on it, while catching nothing
+  earlier than calibration already does. Use it only if your healthy cycles look like
+  stationary noise. `calibrate_cusum` sets `h` from your own healthy runs.
+
+### Confirm blame by ablation
+
+`blame` names suspects. `confirm_blame` tests them: it removes the suspects from a copy of
+the agent (`agent.without(ids)`), re-runs the regressed probes, and compares the result with
+random control sets of the same size drawn from memories those probes also used. It also
+counts collateral damage on probes that still passed.
+
+```python
+from regress.ablation import confirm_blame
+res = confirm_blame(monitor, checkpoint_agent, cycle=12, top=5, controls=4)
+res.verdict   # "confirmed" | "refuted" | "inconclusive"
+```
+
+In the collapse simulation at cycle 12, removing the 5 suspects recovers 9 of 17 regressed
+probes, against 0–1 for each random control (confirmed). The cost is 3 of 40 previously
+passing probes broken. When regressions are not caused by anything in memory, the verdict
+is *refuted*. Ablation answers "is a memory that is present doing harm?". It cannot recover
+information that consolidation already destroyed (see the real-agent results).
+
+### Pay less per check
+
+* **Response cache.** If the agent exposes `state_fingerprint()`, a response depends only on
+  (state, probe), so `RegressionMonitor(..., cache=ResponseCache("cache.jsonl"))` makes
+  re-testing an unchanged checkpoint free. Bisection replays are the main beneficiary: a
+  7-step bisection over 21 checkpoints was served almost entirely from cache (1,200–1,440
+  cache hits per run). This assumes deterministic answers (temperature 0).
+* **Screening.** `RegressionMonitor(..., screen=40)` runs a fixed, stratified 40-probe subset
+  (by held-out split and first tag) on cycles after the baseline. It escalates to the full
+  suite when that subset shows any signal without the significance gate, or any probe error.
+  Over 20-cycle simulator runs it saved 68–71 % of probe calls on healthy agents, and alarmed
+  on exactly the same cycle as full evaluation in all 12 runs (healthy, collapse, slow, leak
+  × 3 seeds). **Known limit:** a regression confined to probes outside the subset is
+  invisible on a screened cycle. A test documents it. Stratify with tags and run `full=True`
+  periodically.
+
 ---
 
 ## The alarm rule
@@ -335,14 +489,15 @@ turns CI red.
   which runs were healthy.
 * **The simulator is a cartoon.** Its collapse mechanism (hub attraction plus
   importance-weighted retrieval plus self-labelling) was designed to produce the
-  signature. It shows that the detector responds to the signature. It does not show that
-  real agents collapse this way.
+  signature. The real-agent experiment (see *Does it work on a real agent?*) is the
+  evidence that matters, and it is one small model on one synthetic task.
 * **Expressed confidence is only as meaningful as the agent's self-report.** Agents without
   a confidence channel lose half of the collapse signature and fall back on the
   multi-category rule.
-* **Embeddings must be comparable within a cycle.** Diversity is recomputed from scratch
-  each cycle, so a change of embedding model does not crash anything. It will, however,
-  move the diversity numbers for reasons unrelated to memory health.
+* **The reference ruler is only as good as its embedder.** The default hashing embedder
+  is deterministic and dependency-free. It sees lexical, not semantic, similarity, so two
+  paraphrases of one fact look diverse to it. Pass a sentence-embedding model as `ruler=`
+  for semantic diversity, and keep that model fixed for the life of the history.
 * **Onset estimates are approximate.** In the simulator they land within about two cycles of
   the truth and lean early. An early estimate is the cheaper mistake, because you search a
   superset of the right range.
@@ -370,7 +525,10 @@ src/regress/
   adapters.py    text memories: hashing embedder, text output keys
   site.py        build the interactive lab / HTML reports (template in assets/lab.html)
   report.py      terminal tables, sparklines, verdicts
-  cli.py         regress demo | show | site | report | gate | calibrate | blame | health
+  ablation.py    confirm blame suspects by removing them (agent.without)
+  cache.py       response cache keyed on (agent state, probe)
+  llm/           real-agent harness: backends (llama.cpp, Claude, rules), fact world, note agent, experiment
+  cli.py         regress demo | show | site | report | gate | calibrate | blame | health | experiment
 space/           Hugging Face Space (Gradio + FastAPI)
 action.yml       GitHub Action wrapping `regress gate`
 ```
@@ -381,7 +539,7 @@ Dependencies: `numpy` only. Python ≥ 3.10.
 
 ```bash
 pip install -e ".[test]" ruff
-pytest              # ~160 tests, including Hypothesis property tests
+pytest              # ~200 tests, including Hypothesis property tests
 ruff check src tests examples
 ```
 

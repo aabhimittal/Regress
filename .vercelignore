@@ -2,3 +2,5 @@
 tests
 .github
 space
+experiments/results/*/llm-cache.jsonl
+experiments/results/*/history-*.json

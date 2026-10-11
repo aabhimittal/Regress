@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "regress"
-version = "0.2.0"
+version = "0.3.0"
 description = "Regression testing for self-evolving agents: detect memory collapse after each learning cycle."
 readme = "README.md"
 license = { text = "MIT" }
@@ -14,6 +14,8 @@ dependencies = ["numpy>=1.24"]
 [project.optional-dependencies]
 test = ["pytest>=7", "hypothesis>=6"]
 space = ["gradio>=4.44", "uvicorn>=0.23"]
+llm = ["llama-cpp-python>=0.3"]
+claude = ["anthropic>=0.70"]
 
 [project.scripts]
 regress = "regress.cli:main"

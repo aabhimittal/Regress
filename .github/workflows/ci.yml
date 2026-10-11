@@ -28,6 +28,10 @@ jobs:
           regress --no-color demo --scenario collapse --cycles 14 --save collapse.json > /dev/null
           regress gate healthy.json
           if regress gate collapse.json; then echo "gate should have failed" && exit 1; fi
+      - name: Real-agent harness end to end (deterministic stand-in model)
+        run: |
+          regress experiment --backend rules --cycles 5 --people 12 --out exp
+          python -c "import json,sys; s=json.load(open('exp/summary.json')); sys.exit(0 if s['separates'] else 1)"
 
   site-and-space:
     runs-on: ubuntu-latest

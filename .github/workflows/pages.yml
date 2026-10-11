@@ -26,7 +26,7 @@ jobs:
           python-version: "3.12"
       - run: pip install .
       # Rebuilt from the library on every push, so the page's numbers never go stale.
-      - run: regress site --out _site
+      - run: regress site --out _site --results experiments/results
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
