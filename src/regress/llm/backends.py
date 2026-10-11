@@ -173,6 +173,9 @@ class RuleBackend:
             return Completion(" ".join(words[:limit]), None)
         notes, _, question = user.partition("Question:")
         q = question.strip().rstrip("?")
+        hop = self._multihop(notes, q)
+        if hop is not None:
+            return hop
         m = re.match(r"What is (.+?)'s (.+)", q)
         if not m:
             return Completion("unknown", 0.3)
@@ -188,6 +191,24 @@ class RuleBackend:
             best = max(sorted(set(values)), key=values.count)
             return Completion(best, 0.6)
         return Completion("unknown", 0.3)
+
+
+    @staticmethod
+    def _multihop(notes: str, q: str) -> Completion | None:
+        m = re.match(r"(Which company does|In which city does) (.+?) work(?: at)?$", q)
+        if not m:
+            return None
+        person = m.group(2).lower()
+        sentences = [x.strip().lower() for x in re.split(r"[.\n]", notes) if x.strip()]
+        company = next((x.split(" works at ", 1)[1].strip(" -") for x in sentences
+                        if person in x and " works at " in x), None)
+        if company is None:
+            return Completion("unknown", 0.6)
+        if m.group(1).startswith("Which company"):
+            return Completion(company, 0.9)
+        city = next((x.split(" is based in ", 1)[1].strip(" -") for x in sentences
+                     if company in x and " is based in " in x), None)
+        return Completion(city, 0.85) if city else Completion("unknown", 0.6)
 
 
 _STOP = set("""what the and with notes note works lives favourite colour profession home city pet
